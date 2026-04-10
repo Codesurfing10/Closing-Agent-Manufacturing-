@@ -10,14 +10,14 @@ import json
 import uuid
 import sqlite3
 import logging
-from datetime import datetime, date
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
+from datetime import datetime
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 load_dotenv()
 
@@ -393,10 +393,18 @@ class AgentRunRequest(BaseModel):
 # App setup
 # ──────────────────────────────────────────────────────────────────────────────
 
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    init_db()
+    logger.info("Database initialised. ALLOWED_ORIGINS=%s", ALLOWED_ORIGINS)
+    yield
+
+
 app = FastAPI(
     title="PET Manufacturing Closing Agent",
     description="AI-powered sales agent for the PET plastic manufacturing industry",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -406,12 +414,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-def on_startup():
-    init_db()
-    logger.info("Database initialised. ALLOWED_ORIGINS=%s", ALLOWED_ORIGINS)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -792,7 +794,7 @@ def run_agent(body: AgentRunRequest):
         return {"action": "feedback_response_generated", "response": response}
 
     elif any(k in task_lower for k in ["funnel", "pipeline", "status", "overview", "dashboard"]):
-        return run_agent.__wrapped__ if hasattr(run_agent, "__wrapped__") else get_funnel()
+        return get_funnel()
 
     else:
         # General AI assistant
