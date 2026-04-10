@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PET Manufacturing Closing Agent</title>
+  <link rel="stylesheet" href="style.css" />
+  <!-- Feather icons (lightweight SVG icons) -->
+  <script src="https://unpkg.com/feather-icons@4.29.0/dist/feather.min.js"></script>
+</head>
+<body>
+  <!-- ── Sidebar ───────────────────────────────────────────────── -->
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <span class="brand-icon">⚗️</span>
+      <span class="brand-text">PET Agent</span>
+    </div>
+    <nav class="sidebar-nav">
+      <a href="#" class="nav-item active" data-view="dashboard">
+        <i data-feather="bar-chart-2"></i> Dashboard
+      </a>
+      <a href="#" class="nav-item" data-view="contacts">
+        <i data-feather="users"></i> Contacts
+      </a>
+      <a href="#" class="nav-item" data-view="emails">
+        <i data-feather="mail"></i> Emails
+      </a>
+      <a href="#" class="nav-item" data-view="meetings">
+        <i data-feather="calendar"></i> Meetings
+      </a>
+      <a href="#" class="nav-item" data-view="orders">
+        <i data-feather="package"></i> Orders
+      </a>
+      <a href="#" class="nav-item" data-view="feedback">
+        <i data-feather="message-square"></i> Feedback
+      </a>
+      <a href="#" class="nav-item" data-view="agent">
+        <i data-feather="cpu"></i> AI Agent
+      </a>
+    </nav>
+    <div class="sidebar-footer">
+      <div id="api-status" class="api-status connecting">
+        <span class="status-dot"></span> Connecting…
+      </div>
+    </div>
+  </aside>
+
+  <!-- ── Main content ──────────────────────────────────────────── -->
+  <main class="main">
+    <!-- Toast -->
+    <div id="toast" class="toast hidden"></div>
+
+    <!-- ── Dashboard view ── -->
+    <section id="view-dashboard" class="view active">
+      <header class="view-header">
+        <h1>Dashboard</h1>
+        <span class="subtitle">PET Plastic Manufacturing Sales Pipeline</span>
+      </header>
+
+      <div class="stats-grid" id="stats-grid">
+        <div class="stat-card"><div class="stat-value" id="stat-contacts">–</div><div class="stat-label">Total Contacts</div></div>
+        <div class="stat-card"><div class="stat-value" id="stat-emails">–</div><div class="stat-label">Emails Sent</div></div>
+        <div class="stat-card"><div class="stat-value" id="stat-meetings">–</div><div class="stat-label">Meetings</div></div>
+        <div class="stat-card"><div class="stat-value" id="stat-pipeline">–</div><div class="stat-label">Pipeline Value (USD)</div></div>
+      </div>
+
+      <div class="card">
+        <h2 class="card-title">Sales Funnel</h2>
+        <div id="funnel-chart" class="funnel-chart"></div>
+      </div>
+
+      <div class="card">
+        <h2 class="card-title">Companies Targeted</h2>
+        <div class="company-badges">
+          <span class="badge">Amcor</span>
+          <span class="badge">Niagara Bottling</span>
+          <span class="badge">Coca-Cola</span>
+          <span class="badge">PepsiCo</span>
+          <span class="badge">Unilever</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Contacts view ── -->
+    <section id="view-contacts" class="view">
+      <header class="view-header">
+        <h1>Contacts</h1>
+        <button class="btn btn-primary" id="btn-add-contact">
+          <i data-feather="user-plus"></i> Add Contact
+        </button>
+      </header>
+
+      <div class="filter-bar">
+        <select id="filter-company" class="form-select">
+          <option value="">All Companies</option>
+          <option>Amcor</option>
+          <option>Niagara Bottling</option>
+          <option>Coca-Cola</option>
+          <option>PepsiCo</option>
+          <option>Unilever</option>
+        </select>
+        <select id="filter-stage" class="form-select">
+          <option value="">All Stages</option>
+          <option>Identified</option>
+          <option>Contacted</option>
+          <option>Meeting Scheduled</option>
+          <option>Proposal Sent</option>
+          <option>Closed Won</option>
+          <option>Closed Lost</option>
+        </select>
+      </div>
+
+      <div id="contacts-table-wrap" class="table-wrap">
+        <table class="data-table" id="contacts-table">
+          <thead>
+            <tr>
+              <th>Name</th><th>Title</th><th>Company</th><th>Email</th><th>Stage</th><th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="contacts-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ── Emails view ── -->
+    <section id="view-emails" class="view">
+      <header class="view-header">
+        <h1>Outreach Emails</h1>
+        <button class="btn btn-primary" id="btn-generate-email">
+          <i data-feather="zap"></i> Generate Email
+        </button>
+      </header>
+      <div id="emails-list" class="card-list"></div>
+    </section>
+
+    <!-- ── Meetings view ── -->
+    <section id="view-meetings" class="view">
+      <header class="view-header">
+        <h1>Meetings</h1>
+        <button class="btn btn-primary" id="btn-schedule-meeting">
+          <i data-feather="calendar"></i> Schedule Meeting
+        </button>
+      </header>
+      <div id="meetings-list" class="card-list"></div>
+    </section>
+
+    <!-- ── Orders view ── -->
+    <section id="view-orders" class="view">
+      <header class="view-header">
+        <h1>Orders</h1>
+        <button class="btn btn-primary" id="btn-create-order">
+          <i data-feather="plus-circle"></i> New Order
+        </button>
+      </header>
+      <div id="orders-list" class="card-list"></div>
+    </section>
+
+    <!-- ── Feedback view ── -->
+    <section id="view-feedback" class="view">
+      <header class="view-header">
+        <h1>Feedback</h1>
+        <button class="btn btn-primary" id="btn-add-feedback">
+          <i data-feather="message-circle"></i> Log Feedback
+        </button>
+      </header>
+      <div id="feedback-list" class="card-list"></div>
+    </section>
+
+    <!-- ── AI Agent view ── -->
+    <section id="view-agent" class="view">
+      <header class="view-header">
+        <h1>AI Agent</h1>
+        <span class="subtitle">Ask the agent to perform sales tasks</span>
+      </header>
+      <div class="card agent-card">
+        <div id="agent-messages" class="agent-messages"></div>
+        <div class="agent-input-row">
+          <select id="agent-contact-select" class="form-select agent-contact">
+            <option value="">No contact selected</option>
+          </select>
+          <input id="agent-input" class="form-input agent-input" type="text"
+                 placeholder="e.g. Draft an email for this contact…" />
+          <button class="btn btn-primary" id="btn-agent-send">
+            <i data-feather="send"></i>
+          </button>
+        </div>
+        <div class="agent-examples">
+          <span>Try: </span>
+          <button class="chip" data-prompt="Draft an outreach email">Draft email</button>
+          <button class="chip" data-prompt="Generate a meeting agenda">Meeting agenda</button>
+          <button class="chip" data-prompt="Show me the pipeline overview">Pipeline overview</button>
+          <button class="chip" data-prompt="Suggest next steps">Next steps</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ── Modals ──────────────────────────────────────────────────── -->
+  <div id="modal-overlay" class="modal-overlay hidden">
+    <div class="modal" id="modal-box">
+      <button class="modal-close" id="modal-close-btn">&times;</button>
+      <div id="modal-content"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
