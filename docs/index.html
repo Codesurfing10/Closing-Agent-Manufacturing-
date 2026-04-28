@@ -40,6 +40,10 @@
       <a href="#" class="nav-item" data-view="agent">
         <i data-feather="cpu"></i> AI Agent
       </a>
+      <a href="#" class="nav-item" data-view="approvals">
+        <i data-feather="check-circle"></i> Approvals
+        <span class="nav-badge" id="approvals-badge" style="display:none">0</span>
+      </a>
     </nav>
     <div class="sidebar-footer">
       <div id="api-status" class="api-status connecting">
@@ -66,6 +70,7 @@
         <div class="stat-card"><div class="stat-value" id="stat-meetings">–</div><div class="stat-label">Meetings</div></div>
         <div class="stat-card"><div class="stat-value" id="stat-pipeline">–</div><div class="stat-label">Pipeline Value (USD)</div></div>
         <div class="stat-card"><div class="stat-value" id="stat-new-leads">–</div><div class="stat-label">New Leads</div></div>
+        <div class="stat-card stat-card-warn"><div class="stat-value" id="stat-pending-approvals">–</div><div class="stat-label">Pending Approvals</div></div>
       </div>
 
       <div class="card">
@@ -228,6 +233,14 @@
           <button class="chip" data-prompt="Suggest next steps">Next steps</button>
         </div>
       </div>
+    </section>
+    <!-- ── Approvals view ── -->
+    <section id="view-approvals" class="view">
+      <header class="view-header">
+        <h1>Approvals</h1>
+        <span class="subtitle">Review and approve outgoing communications before they are sent</span>
+      </header>
+      <div id="approvals-content"></div>
     </section>
   </main>
 
