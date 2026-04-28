@@ -117,6 +117,7 @@ async function loadView(view) {
     case "meetings": return loadMeetings();
     case "orders": return loadOrders();
     case "feedback": return loadFeedback();
+    case "leads": return loadLeads();
     case "agent": return loadAgent();
   }
 }
@@ -130,6 +131,7 @@ async function loadDashboard() {
     $("#stat-emails").textContent = s.emails_sent ?? 0;
     $("#stat-meetings").textContent = s.meetings ?? 0;
     $("#stat-pipeline").textContent = fmtUSD(s.pipeline_usd);
+    if ($("#stat-new-leads")) $("#stat-new-leads").textContent = s.new_leads ?? 0;
 
     const funnel = data.funnel;
     const max = Math.max(...funnel.map((f) => f.count), 1);
@@ -617,6 +619,118 @@ async function submitFeedback() {
   }
 }
 
+/* ── Leads ────────────────────────────────────────────────────── */
+let _leads = [];
+
+async function loadLeads() {
+  try {
+    const status = $("#filter-lead-status").value;
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    _leads = await api("/leads?" + params.toString());
+    renderLeadsTable(_leads);
+  } catch (e) {
+    showToast("Could not load leads: " + e.message, "error");
+  }
+}
+
+function renderLeadsTable(leads) {
+  const tbody = $("#leads-tbody");
+  if (!leads.length) {
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:32px">No leads yet. Click "Generate Leads" to create some!</td></tr>';
+    return;
+  }
+  tbody.innerHTML = leads
+    .map(
+      (l) => `
+      <tr>
+        <td><strong>${l.name}</strong></td>
+        <td style="color:var(--text-muted)">${l.title || "–"}</td>
+        <td>${l.company}</td>
+        <td style="color:var(--text-muted);font-size:0.85em;max-width:220px">${l.rationale || "–"}</td>
+        <td>${stagePill(l.status)}</td>
+        <td>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            ${l.status !== "Converted" ? `<button class="btn btn-sm btn-primary" onclick="convertLead('${l.id}')"><i data-feather="user-plus"></i> Convert</button>` : ""}
+            <button class="btn btn-sm btn-secondary" onclick="updateLeadStatus('${l.id}','Dismissed')" title="Dismiss"><i data-feather="x"></i></button>
+            <button class="btn btn-sm btn-icon" onclick="deleteLead('${l.id}')" title="Delete"><i data-feather="trash-2"></i></button>
+          </div>
+        </td>
+      </tr>`
+    )
+    .join("");
+  feather.replace();
+}
+
+async function convertLead(id) {
+  try {
+    const res = await post(`/leads/${id}/convert`, {});
+    showToast("Lead converted to contact!");
+    loadLeads();
+    if (_currentView === "dashboard") loadDashboard();
+  } catch (e) {
+    showToast("Error: " + e.message, "error");
+  }
+}
+
+async function updateLeadStatus(id, status) {
+  try {
+    await put(`/leads/${id}/status`, { status });
+    showToast(`Lead marked as ${status}`);
+    loadLeads();
+    if (_currentView === "dashboard") loadDashboard();
+  } catch (e) {
+    showToast("Error: " + e.message, "error");
+  }
+}
+
+async function deleteLead(id) {
+  if (!confirm("Delete this lead?")) return;
+  try {
+    await del(`/leads/${id}`);
+    showToast("Lead deleted");
+    loadLeads();
+  } catch (e) {
+    showToast("Error: " + e.message, "error");
+  }
+}
+
+$("#btn-generate-leads").addEventListener("click", () => {
+  openModal(`
+    <h2>Generate AI Leads</h2>
+    <p style="color:var(--text-muted);margin-bottom:16px">The AI will identify new PET-industry prospects and add them to your pipeline.</p>
+    <div class="form-group">
+      <label class="form-label">Number of leads to generate</label>
+      <input id="gl-count" class="form-input" type="number" min="1" max="20" value="5" />
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" id="btn-gl-submit" onclick="submitGenerateLeads()"><i data-feather="zap"></i> Generate</button>
+    </div>
+  `);
+});
+
+async function submitGenerateLeads() {
+  const count = parseInt($("#gl-count").value) || 5;
+  const btn = $("#btn-gl-submit");
+  btn.disabled = true;
+  btn.innerHTML = '<span class="loader"></span> Generating…';
+  try {
+    const res = await post("/leads/generate", { count });
+    closeModal();
+    showToast(`Generated ${res.generated} new lead${res.generated !== 1 ? "s" : ""}!`);
+    navigate("leads");
+    if (_currentView === "dashboard") loadDashboard();
+  } catch (e) {
+    showToast("Error: " + e.message, "error");
+    btn.disabled = false;
+    btn.innerHTML = '<i data-feather="zap"></i> Generate';
+    feather.replace();
+  }
+}
+
+$("#filter-lead-status").addEventListener("change", loadLeads);
+
 /* ── AI Agent chat ────────────────────────────────────────────── */
 async function loadAgent() {
   // Populate contact dropdown
@@ -705,4 +819,8 @@ Object.assign(window, {
   submitAddContact,
   openGenerateEmail,
   openScheduleMeeting,
+  convertLead,
+  updateLeadStatus,
+  deleteLead,
+  submitGenerateLeads,
 });

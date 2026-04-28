@@ -5,6 +5,7 @@ FastAPI backend – deployable on Render
 
 from __future__ import annotations
 
+import asyncio
 import os
 import json
 import uuid
@@ -28,12 +29,15 @@ logger = logging.getLogger(__name__)
 # Config
 # ──────────────────────────────────────────────────────────────────────────────
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 ALLOWED_ORIGINS_RAW = os.getenv(
     "ALLOWED_ORIGINS",
     "https://codesurfing10.github.io,http://localhost:3000,http://localhost:5500",
 )
 ALLOWED_ORIGINS = [o.strip() for o in ALLOWED_ORIGINS_RAW.split(",") if o.strip()]
 DB_PATH = os.getenv("DB_PATH", "closing_agent.db")
+# How often the daily lead-generation task runs (seconds); override via env for testing
+LEAD_GEN_INTERVAL_SECS = int(os.getenv("LEAD_GEN_INTERVAL_SECS", str(24 * 60 * 60)))
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Database helpers
@@ -114,6 +118,21 @@ def init_db():
                 response TEXT,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (contact_id) REFERENCES contacts(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS leads (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                title TEXT,
+                company TEXT NOT NULL,
+                email TEXT,
+                phone TEXT,
+                linkedin TEXT,
+                industry TEXT DEFAULT 'PET Plastic Manufacturing',
+                rationale TEXT,
+                source TEXT DEFAULT 'AI Generated',
+                status TEXT DEFAULT 'New',
+                created_at TEXT NOT NULL
             );
         """)
     _seed_contacts()
@@ -230,25 +249,46 @@ def _seed_contacts():
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _ai_complete(system: str, user: str) -> str:
-    """Call OpenAI ChatCompletion, fall back to template string on failure."""
-    if not OPENAI_API_KEY:
-        return ""
-    try:
-        from openai import OpenAI
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            max_tokens=600,
-            temperature=0.7,
-        )
-        return resp.choices[0].message.content.strip()
-    except Exception as exc:
-        logger.warning("OpenAI call failed: %s", exc)
-        return ""
+    """Call OpenAI ChatCompletion, fall back to Gemini, then to template string on failure."""
+    # Try OpenAI first
+    if OPENAI_API_KEY:
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=OPENAI_API_KEY)
+            resp = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                max_tokens=1200,
+                temperature=0.7,
+            )
+            return resp.choices[0].message.content.strip()
+        except Exception as exc:
+            logger.warning("OpenAI call failed: %s", exc)
+
+    # Fall back to Gemini
+    if GEMINI_API_KEY:
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=GEMINI_API_KEY)
+            model = genai.GenerativeModel(
+                model_name="gemini-1.5-flash",
+                system_instruction=system,
+            )
+            resp = model.generate_content(
+                user,
+                generation_config=genai.types.GenerationConfig(
+                    max_output_tokens=1200,
+                    temperature=0.7,
+                ),
+            )
+            return resp.text.strip()
+        except Exception as exc:
+            logger.warning("Gemini call failed: %s", exc)
+
+    return ""
 
 
 def _generate_email(contact: dict, context: str = "") -> dict:
@@ -332,6 +372,112 @@ def _generate_meeting_agenda(contact: dict, context: str = "") -> str:
     )
 
 
+_LEAD_GEN_TARGETS = [
+    "Alpla", "Berry Global", "Silgan", "Graham Packaging", "Resilux",
+    "Plastipak", "Ring Container Technologies", "TricorBraun", "Pretium Packaging",
+    "Greiner Packaging", "Alpek Polyester", "Far Eastern New Century",
+    "Indorama Ventures", "DAK Americas", "Lotte Chemical",
+    "Danone", "Nestlé Waters", "Keurig Dr Pepper", "Refresco", "Cott Corporation",
+]
+
+
+def _generate_leads_ai(count: int = 5) -> list[dict]:
+    """Use AI to generate new PET-industry sales leads; fall back to curated templates."""
+    system = (
+        "You are a B2B lead generation specialist for PET plastic resin and packaging. "
+        "Generate realistic sales prospect profiles for the PET / rPET manufacturing industry. "
+        "Each lead should be a real decision-maker title at a plausible company that buys or "
+        "processes PET resin or packaging. Return ONLY a JSON array with no extra text."
+    )
+    user = (
+        f"Generate exactly {count} new sales leads for a PET plastic resin supplier. "
+        "Target procurement, supply chain, packaging, and sustainability executives at "
+        "beverage, food, personal care, or packaging companies. "
+        "Return a JSON array where each element has keys: "
+        "name, title, company, email, phone, linkedin, rationale. "
+        "Make the rationale 1-2 sentences explaining why this is a good prospect. "
+        "Use realistic but fictional contact details."
+    )
+    raw = _ai_complete(system, user)
+    if raw:
+        # Strip markdown code fences if present
+        clean = raw.strip()
+        if clean.startswith("```"):
+            clean = clean.split("```", 2)[1]
+            if clean.startswith("json"):
+                clean = clean[4:]
+            clean = clean.rsplit("```", 1)[0].strip()
+        try:
+            leads = json.loads(clean)
+            if isinstance(leads, list) and leads:
+                return leads[:count]
+        except Exception:
+            pass
+
+    # Fallback: deterministic templates drawn from known targets
+    import random
+    titles = [
+        "Director of Procurement", "VP Supply Chain", "Head of Packaging",
+        "Sustainability Manager", "Category Manager – Resins",
+        "Senior Buyer – Packaging Materials", "Global Sourcing Lead",
+    ]
+    first_names = ["Jordan", "Taylor", "Morgan", "Casey", "Riley", "Drew", "Avery", "Quinn"]
+    last_names = ["Rivera", "Nguyen", "Okafor", "Petrov", "Svensson", "Kowalski", "Ahmed"]
+    selected_companies = random.sample(_LEAD_GEN_TARGETS, min(count, len(_LEAD_GEN_TARGETS)))
+    leads = []
+    for company in selected_companies:
+        fn = random.choice(first_names)
+        ln = random.choice(last_names)
+        title = random.choice(titles)
+        slug = company.lower().replace(" ", "").replace("-", "")
+        leads.append({
+            "name": f"{fn} {ln}",
+            "title": title,
+            "company": company,
+            "email": f"{fn.lower()}.{ln.lower()}@{slug}.com",
+            "phone": f"+1-{random.randint(200,999)}-555-{random.randint(1000,9999)}",
+            "linkedin": f"linkedin.com/in/{fn.lower()}-{ln.lower()}-{slug}",
+            "rationale": (
+                f"{company} is a major PET packaging buyer. "
+                f"Reaching out to {fn} in {title} can unlock new resin supply contracts."
+            ),
+        })
+    return leads
+
+
+def _run_daily_lead_generation():
+    """Generate and persist a batch of new leads to the DB."""
+    leads = _generate_leads_ai(count=5)
+    now = datetime.utcnow().isoformat()
+    saved = 0
+    with get_db() as conn:
+        for lead in leads:
+            lid = str(uuid.uuid4())
+            conn.execute(
+                """INSERT INTO leads
+                   (id, name, title, company, email, phone, linkedin,
+                    industry, rationale, source, status, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    lid,
+                    lead.get("name", "Unknown"),
+                    lead.get("title", ""),
+                    lead.get("company", "Unknown"),
+                    lead.get("email", ""),
+                    lead.get("phone", ""),
+                    lead.get("linkedin", ""),
+                    "PET Plastic Manufacturing",
+                    lead.get("rationale", ""),
+                    "AI Generated",
+                    "New",
+                    now,
+                ),
+            )
+            saved += 1
+    logger.info("Daily lead generation: saved %d leads", saved)
+    return saved
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Pydantic models
 # ──────────────────────────────────────────────────────────────────────────────
@@ -384,6 +530,12 @@ class FeedbackCreate(BaseModel):
     contact_id: str
     message: str
 
+class LeadGenerateRequest(BaseModel):
+    count: Optional[int] = 5
+
+class LeadStatusUpdate(BaseModel):
+    status: str
+
 class AgentRunRequest(BaseModel):
     task: str
     contact_id: Optional[str] = None
@@ -393,11 +545,29 @@ class AgentRunRequest(BaseModel):
 # App setup
 # ──────────────────────────────────────────────────────────────────────────────
 
+async def _daily_lead_gen_loop():
+    """Background task: generate leads every LEAD_GEN_INTERVAL_SECS seconds."""
+    await asyncio.sleep(10)  # small initial delay to let the server start up
+    while True:
+        try:
+            saved = _run_daily_lead_generation()
+            logger.info("Background lead generation complete: %d leads added", saved)
+        except Exception as exc:
+            logger.error("Background lead generation failed: %s", exc)
+        await asyncio.sleep(LEAD_GEN_INTERVAL_SECS)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
     logger.info("Database initialised. ALLOWED_ORIGINS=%s", ALLOWED_ORIGINS)
+    task = asyncio.create_task(_daily_lead_gen_loop())
     yield
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 app = FastAPI(
@@ -722,6 +892,115 @@ def list_feedback(contact_id: Optional[str] = None):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Routes – Leads
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.post("/leads/generate", status_code=201)
+def generate_leads(body: LeadGenerateRequest):
+    """Generate new AI-powered leads and save them to the database."""
+    count = max(1, min(body.count or 5, 20))
+    saved = 0
+    leads_out = []
+    generated = _generate_leads_ai(count=count)
+    now = datetime.utcnow().isoformat()
+    with get_db() as conn:
+        for lead in generated:
+            lid = str(uuid.uuid4())
+            conn.execute(
+                """INSERT INTO leads
+                   (id, name, title, company, email, phone, linkedin,
+                    industry, rationale, source, status, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    lid,
+                    lead.get("name", "Unknown"),
+                    lead.get("title", ""),
+                    lead.get("company", "Unknown"),
+                    lead.get("email", ""),
+                    lead.get("phone", ""),
+                    lead.get("linkedin", ""),
+                    "PET Plastic Manufacturing",
+                    lead.get("rationale", ""),
+                    "AI Generated",
+                    "New",
+                    now,
+                ),
+            )
+            leads_out.append({**lead, "id": lid, "status": "New", "created_at": now})
+            saved += 1
+    return {"generated": saved, "leads": leads_out}
+
+
+@app.get("/leads")
+def list_leads(status: Optional[str] = None):
+    with get_db() as conn:
+        if status:
+            rows = conn.execute(
+                "SELECT * FROM leads WHERE status=? ORDER BY created_at DESC",
+                (status,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM leads ORDER BY created_at DESC"
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.put("/leads/{lead_id}/status")
+def update_lead_status(lead_id: str, body: LeadStatusUpdate):
+    allowed = ["New", "Contacted", "Qualified", "Converted", "Dismissed"]
+    if body.status not in allowed:
+        raise HTTPException(status_code=400, detail=f"Invalid status. Choose from: {allowed}")
+    with get_db() as conn:
+        result = conn.execute(
+            "UPDATE leads SET status=? WHERE id=?",
+            (body.status, lead_id),
+        )
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Lead not found")
+    return {"message": "Lead status updated", "status": body.status}
+
+
+@app.post("/leads/{lead_id}/convert", status_code=201)
+def convert_lead_to_contact(lead_id: str):
+    """Promote a lead into the contacts pipeline."""
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM leads WHERE id=?", (lead_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    lead = dict(row)
+    now = datetime.utcnow().isoformat()
+    cid = str(uuid.uuid4())
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO contacts
+               (id, name, title, company, email, phone, linkedin,
+                industry, stage, notes, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                cid, lead["name"], lead["title"], lead["company"],
+                lead["email"], lead["phone"], lead["linkedin"],
+                "PET Plastic Manufacturing", "Identified",
+                lead.get("rationale", ""), now, now,
+            ),
+        )
+        conn.execute(
+            "UPDATE leads SET status='Converted' WHERE id=?",
+            (lead_id,),
+        )
+    return {"message": "Lead converted to contact", "contact_id": cid}
+
+
+@app.delete("/leads/{lead_id}")
+def delete_lead(lead_id: str):
+    with get_db() as conn:
+        result = conn.execute("DELETE FROM leads WHERE id=?", (lead_id,))
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Lead not found")
+    return {"message": "Lead deleted"}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Routes – Funnel & Dashboard
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -736,7 +1015,8 @@ def get_funnel():
             "(SELECT COUNT(*) FROM emails WHERE status='Sent') as emails_sent, "
             "(SELECT COUNT(*) FROM meetings) as meetings, "
             "(SELECT COUNT(*) FROM orders) as orders, "
-            "(SELECT COALESCE(SUM(quantity_tons * unit_price_usd), 0) FROM orders WHERE status != 'Cancelled') as pipeline_usd "
+            "(SELECT COALESCE(SUM(quantity_tons * unit_price_usd), 0) FROM orders WHERE status != 'Cancelled') as pipeline_usd, "
+            "(SELECT COUNT(*) FROM leads WHERE status='New') as new_leads "
             "FROM contacts"
         ).fetchone()
     stage_counts = {r["stage"]: r["count"] for r in rows}
