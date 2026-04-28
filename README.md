@@ -28,13 +28,15 @@ An AI-powered sales agent that identifies contacts in the **PET plastic manufact
 
 ## Features
 
-- **Dashboard** – Sales funnel visualisation, pipeline value, key stats
+- **Dashboard** – Sales funnel visualisation, pipeline value, key stats (including new leads count)
 - **Contacts** – 10 pre-loaded PET-industry contacts; add/filter/stage management
 - **Email Generation** – AI-crafted personalised outreach emails with one click
 - **Meeting Scheduler** – Book meetings with AI-generated agendas
 - **Order Management** – Create and track orders from Pending → Delivered
 - **Feedback Handler** – Log customer feedback and get an AI-written response
+- **Daily Lead Generation** – Automatic AI-powered lead discovery every 24 hours; manually trigger via the Leads view
 - **AI Agent Chat** – Natural-language interface to run any sales task
+- **Gemini Integration** – Uses Google Gemini as an AI backend when OpenAI is unavailable
 
 ---
 
@@ -85,6 +87,11 @@ API docs available at `http://localhost:8000/docs`.
 | `PUT` | `/orders/{id}/status` | Update order status |
 | `POST` | `/feedback` | Log feedback + AI response |
 | `GET` | `/funnel` | Funnel stats & dashboard data |
+| `POST` | `/leads/generate` | AI-generate new leads (saves to DB) |
+| `GET` | `/leads` | List leads (filter by `status`) |
+| `PUT` | `/leads/{id}/status` | Update lead status |
+| `POST` | `/leads/{id}/convert` | Promote lead to contact |
+| `DELETE` | `/leads/{id}` | Delete lead |
 | `POST` | `/agent/run` | Natural-language agent endpoint |
 
 Full interactive docs: `<API_URL>/docs`
@@ -95,6 +102,8 @@ Full interactive docs: `<API_URL>/docs`
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `OPENAI_API_KEY` | No | Enables AI features (GPT-4o-mini). Falls back to templates. |
+| `OPENAI_API_KEY` | No | Enables OpenAI GPT-4o-mini. Takes priority over Gemini when set. |
+| `GEMINI_API_KEY` | No | Enables Google Gemini 1.5 Flash. Used as fallback when OpenAI is unavailable. |
 | `ALLOWED_ORIGINS` | Yes | Comma-separated list of allowed CORS origins (your GitHub Pages URL) |
 | `DB_PATH` | No | SQLite file path (default: `closing_agent.db`) |
+| `LEAD_GEN_INTERVAL_SECS` | No | How often the background lead generator runs in seconds (default: `86400` = 24 h) |

@@ -34,6 +34,9 @@
       <a href="#" class="nav-item" data-view="feedback">
         <i data-feather="message-square"></i> Feedback
       </a>
+      <a href="#" class="nav-item" data-view="leads">
+        <i data-feather="target"></i> Leads
+      </a>
       <a href="#" class="nav-item" data-view="agent">
         <i data-feather="cpu"></i> AI Agent
       </a>
@@ -62,6 +65,7 @@
         <div class="stat-card"><div class="stat-value" id="stat-emails">–</div><div class="stat-label">Emails Sent</div></div>
         <div class="stat-card"><div class="stat-value" id="stat-meetings">–</div><div class="stat-label">Meetings</div></div>
         <div class="stat-card"><div class="stat-value" id="stat-pipeline">–</div><div class="stat-label">Pipeline Value (USD)</div></div>
+        <div class="stat-card"><div class="stat-value" id="stat-new-leads">–</div><div class="stat-label">New Leads</div></div>
       </div>
 
       <div class="card">
@@ -164,6 +168,38 @@
         </button>
       </header>
       <div id="feedback-list" class="card-list"></div>
+    </section>
+
+    <!-- ── Leads view ── -->
+    <section id="view-leads" class="view">
+      <header class="view-header">
+        <h1>Daily Leads</h1>
+        <button class="btn btn-primary" id="btn-generate-leads">
+          <i data-feather="zap"></i> Generate Leads
+        </button>
+      </header>
+
+      <div class="filter-bar">
+        <select id="filter-lead-status" class="form-select">
+          <option value="">All Statuses</option>
+          <option>New</option>
+          <option>Contacted</option>
+          <option>Qualified</option>
+          <option>Converted</option>
+          <option>Dismissed</option>
+        </select>
+      </div>
+
+      <div id="leads-table-wrap" class="table-wrap">
+        <table class="data-table" id="leads-table">
+          <thead>
+            <tr>
+              <th>Name</th><th>Title</th><th>Company</th><th>Rationale</th><th>Status</th><th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="leads-tbody"></tbody>
+        </table>
+      </div>
     </section>
 
     <!-- ── AI Agent view ── -->
