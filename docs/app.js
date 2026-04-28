@@ -119,6 +119,7 @@ async function loadView(view) {
     case "feedback": return loadFeedback();
     case "leads": return loadLeads();
     case "agent": return loadAgent();
+    case "approvals": return loadApprovals();
   }
 }
 
@@ -132,6 +133,11 @@ async function loadDashboard() {
     $("#stat-meetings").textContent = s.meetings ?? 0;
     $("#stat-pipeline").textContent = fmtUSD(s.pipeline_usd);
     if ($("#stat-new-leads")) $("#stat-new-leads").textContent = s.new_leads ?? 0;
+    if ($("#stat-pending-approvals")) {
+      const pa = s.pending_approvals ?? 0;
+      $("#stat-pending-approvals").textContent = pa;
+      updateApprovalsBadge(pa);
+    }
 
     const funnel = data.funnel;
     const max = Math.max(...funnel.map((f) => f.count), 1);
@@ -310,11 +316,14 @@ async function loadEmails() {
               <div class="list-card-title">${e.subject}</div>
               <div class="list-card-meta">To: ${e.contact_name} (${e.company}) · ${fmtDate(e.created_at)}</div>
             </div>
-            ${statusPill(e.status)}
+            <div style="display:flex;gap:6px;align-items:center">
+              ${approvalPill(e.approval_status)}
+              ${statusPill(e.status)}
+            </div>
           </div>
           <div class="list-card-body">${e.body}</div>
           <div class="list-card-actions">
-            ${e.status === "Draft" ? `<button class="btn btn-sm btn-primary" onclick="sendEmail('${e.id}')"><i data-feather="send"></i> Mark Sent</button>` : ""}
+            ${emailActionHtml(e)}
           </div>
         </div>`
       )
@@ -795,6 +804,143 @@ $$(".chip").forEach((chip) => {
   });
 });
 
+/* ── Approvals ────────────────────────────────────────────────── */
+function approvalPill(status) {
+  const normalized = status || "pending";
+  const cls = "approval-" + normalized;
+  const labels = { pending: "Pending Approval", approved: "Approved", rejected: "Rejected" };
+  return `<span class="approval-pill ${cls}">${labels[normalized] || normalized}</span>`;
+}
+
+function emailActionHtml(email) {
+  if (email.approval_status === "rejected") {
+    return `<span style="color:var(--danger);font-size:12px"><i data-feather="x-circle"></i> Rejected — cannot be sent</span>`;
+  }
+  if (email.status === "Draft" && email.approval_status === "approved") {
+    return `<button class="btn btn-sm btn-primary" onclick="sendEmail('${email.id}')"><i data-feather="send"></i> Mark Sent</button>`;
+  }
+  if (email.status === "Draft" && email.approval_status === "pending") {
+    return `<span style="color:var(--warn);font-size:12px"><i data-feather="clock"></i> Awaiting approval</span>`;
+  }
+  return "";
+}
+
+function updateApprovalsBadge(count) {
+  const badge = $("#approvals-badge");
+  if (!badge) return;
+  if (count > 0) {
+    badge.textContent = count;
+    badge.style.display = "inline-flex";
+  } else {
+    badge.style.display = "none";
+  }
+}
+
+async function loadApprovals() {
+  const el = $("#approvals-content");
+  el.innerHTML = '<p style="color:var(--text-muted)">Loading…</p>';
+  try {
+    const data = await api("/approvals");
+    updateApprovalsBadge(data.total);
+    if (data.total === 0) {
+      el.innerHTML = '<div class="card"><p style="color:var(--text-muted);text-align:center;padding:32px">No pending approvals. All outgoing communications are up to date.</p></div>';
+      return;
+    }
+
+    let html = "";
+
+    if (data.emails.length) {
+      html += `<div class="card"><h2 class="card-title"><i data-feather="mail"></i> Outreach Emails (${data.emails.length})</h2><div class="card-list">`;
+      html += data.emails.map((e) => `
+        <div class="list-card">
+          <div class="list-card-header">
+            <div>
+              <div class="list-card-title">${e.subject}</div>
+              <div class="list-card-meta">To: ${e.contact_name} (${e.company}) · ${fmtDate(e.created_at)}</div>
+            </div>
+            ${approvalPill(e.approval_status)}
+          </div>
+          <div class="list-card-body">${e.body}</div>
+          <div class="list-card-actions">
+            <button class="btn btn-sm btn-primary" onclick="approveItem('emails','${e.id}')"><i data-feather="check"></i> Approve</button>
+            <button class="btn btn-sm btn-danger" onclick="rejectItem('emails','${e.id}')"><i data-feather="x"></i> Reject</button>
+          </div>
+        </div>`).join("");
+      html += "</div></div>";
+    }
+
+    if (data.meetings.length) {
+      html += `<div class="card"><h2 class="card-title"><i data-feather="calendar"></i> Meeting Invitations (${data.meetings.length})</h2><div class="card-list">`;
+      html += data.meetings.map((m) => `
+        <div class="list-card">
+          <div class="list-card-header">
+            <div>
+              <div class="list-card-title">${m.title}</div>
+              <div class="list-card-meta">${m.contact_name} (${m.company}) · ${fmtDate(m.scheduled_at)} · ${m.duration_mins} min · ${m.location || ""}</div>
+            </div>
+            ${approvalPill(m.approval_status)}
+          </div>
+          ${m.agenda ? `<div class="list-card-body" style="white-space:pre-wrap">${m.agenda}</div>` : ""}
+          <div class="list-card-actions">
+            <button class="btn btn-sm btn-primary" onclick="approveItem('meetings','${m.id}')"><i data-feather="check"></i> Approve</button>
+            <button class="btn btn-sm btn-danger" onclick="rejectItem('meetings','${m.id}')"><i data-feather="x"></i> Reject</button>
+          </div>
+        </div>`).join("");
+      html += "</div></div>";
+    }
+
+    if (data.feedback.length) {
+      html += `<div class="card"><h2 class="card-title"><i data-feather="message-square"></i> Feedback Responses (${data.feedback.length})</h2><div class="card-list">`;
+      html += data.feedback.map((f) => `
+        <div class="list-card">
+          <div class="list-card-header">
+            <div>
+              <div class="list-card-title">${f.contact_name} · ${f.company}</div>
+              <div class="list-card-meta">${fmtDate(f.created_at)} · Sentiment: ${f.sentiment}</div>
+            </div>
+            ${approvalPill(f.approval_status)}
+          </div>
+          <div class="list-card-body"><strong>Customer:</strong> ${f.message}</div>
+          ${f.response ? `<div class="list-card-body" style="margin-top:8px;border-left:2px solid var(--accent2);padding-left:10px"><strong>AI Response:</strong> ${f.response}</div>` : ""}
+          <div class="list-card-actions">
+            <button class="btn btn-sm btn-primary" onclick="approveItem('feedback','${f.id}')"><i data-feather="check"></i> Approve</button>
+            <button class="btn btn-sm btn-danger" onclick="rejectItem('feedback','${f.id}')"><i data-feather="x"></i> Reject</button>
+          </div>
+        </div>`).join("");
+      html += "</div></div>";
+    }
+
+    el.innerHTML = html;
+    feather.replace();
+  } catch (e) {
+    showToast("Could not load approvals: " + e.message, "error");
+    el.innerHTML = "";
+  }
+}
+
+async function approveItem(type, id) {
+  try {
+    await post(`/approvals/${type}/${id}/approve`, {});
+    showToast("Communication approved ✓");
+    loadApprovals();
+    loadDashboard();
+  } catch (e) {
+    showToast("Error: " + e.message, "error");
+  }
+}
+
+async function rejectItem(type, id) {
+  if (!confirm("Reject this communication? It will not be sent.")) return;
+  try {
+    await post(`/approvals/${type}/${id}/reject`, {});
+    showToast("Communication rejected");
+    loadApprovals();
+    loadDashboard();
+  } catch (e) {
+    showToast("Error: " + e.message, "error");
+  }
+}
+
 /* ── Init ─────────────────────────────────────────────────────── */
 window.addEventListener("DOMContentLoaded", () => {
   feather.replace();
@@ -823,4 +969,6 @@ Object.assign(window, {
   updateLeadStatus,
   deleteLead,
   submitGenerateLeads,
+  approveItem,
+  rejectItem,
 });

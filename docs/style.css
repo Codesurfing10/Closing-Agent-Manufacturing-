@@ -400,6 +400,36 @@ body {
 .loader { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent2); border-radius: 50%; animation: spin .6s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ── Approval pill ───────────────────────────────────────────── */
+.approval-pill {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.approval-pending  { background: #2d2213; color: #e3b341; }
+.approval-approved { background: #1b3a25; color: #56d364; }
+.approval-rejected { background: #3a1414; color: #f85149; }
+
+/* ── Nav badge ───────────────────────────────────────────────── */
+.nav-badge {
+  margin-left: auto;
+  background: var(--danger);
+  color: #fff;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  min-width: 18px;
+  text-align: center;
+  line-height: 16px;
+}
+
+/* ── Stat card warning variant ───────────────────────────────── */
+.stat-card-warn .stat-value { color: var(--warn); }
+
 /* ── Responsive ──────────────────────────────────────────────── */
 @media (max-width: 700px) {
   :root { --sidebar-w: 0px; }

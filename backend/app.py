@@ -78,6 +78,7 @@ def init_db():
                 subject TEXT NOT NULL,
                 body TEXT NOT NULL,
                 status TEXT DEFAULT 'Draft',
+                approval_status TEXT NOT NULL DEFAULT 'approved',
                 sent_at TEXT,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (contact_id) REFERENCES contacts(id)
@@ -92,6 +93,7 @@ def init_db():
                 location TEXT,
                 agenda TEXT,
                 status TEXT DEFAULT 'Scheduled',
+                approval_status TEXT NOT NULL DEFAULT 'approved',
                 notes TEXT,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (contact_id) REFERENCES contacts(id)
@@ -116,6 +118,7 @@ def init_db():
                 message TEXT NOT NULL,
                 sentiment TEXT DEFAULT 'Neutral',
                 response TEXT,
+                approval_status TEXT NOT NULL DEFAULT 'approved',
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (contact_id) REFERENCES contacts(id)
             );
@@ -135,6 +138,7 @@ def init_db():
                 created_at TEXT NOT NULL
             );
         """)
+    _migrate_db()
     _seed_contacts()
 
 
@@ -221,6 +225,21 @@ _SEED_CONTACTS = [
         "linkedin": "linkedin.com/in/nathan-patel-unilever",
     },
 ]
+
+
+def _migrate_db():
+    """Add approval_status columns to existing databases that predate this feature."""
+    migration_sqls = [
+        "ALTER TABLE emails   ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved'",
+        "ALTER TABLE meetings ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved'",
+        "ALTER TABLE feedback ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved'",
+    ]
+    with get_db() as conn:
+        for sql in migration_sqls:
+            try:
+                conn.execute(sql)
+            except Exception:
+                pass  # column already exists
 
 
 def _seed_contacts():
@@ -672,10 +691,10 @@ def generate_email(body: EmailGenerateRequest):
     eid = str(uuid.uuid4())
     with get_db() as conn:
         conn.execute(
-            "INSERT INTO emails (id, contact_id, subject, body, status, created_at) VALUES (?,?,?,?,?,?)",
-            (eid, body.contact_id, email_data["subject"], email_data["body"], "Draft", now),
+            "INSERT INTO emails (id, contact_id, subject, body, status, approval_status, created_at) VALUES (?,?,?,?,?,?,?)",
+            (eid, body.contact_id, email_data["subject"], email_data["body"], "Draft", "pending", now),
         )
-    return {"id": eid, **email_data, "status": "Draft"}
+    return {"id": eid, **email_data, "status": "Draft", "approval_status": "pending"}
 
 
 @app.get("/emails")
@@ -699,6 +718,13 @@ def list_emails(contact_id: Optional[str] = None):
 def send_email(email_id: str):
     now = datetime.utcnow().isoformat()
     with get_db() as conn:
+        email_row = conn.execute("SELECT * FROM emails WHERE id=?", (email_id,)).fetchone()
+        if not email_row:
+            raise HTTPException(status_code=404, detail="Email not found")
+        if email_row["approval_status"] == "pending":
+            raise HTTPException(status_code=403, detail="Email must be approved before sending")
+        if email_row["approval_status"] == "rejected":
+            raise HTTPException(status_code=403, detail="This email has been rejected and cannot be sent")
         result = conn.execute(
             "UPDATE emails SET status='Sent', sent_at=? WHERE id=?",
             (now, email_id),
@@ -734,17 +760,17 @@ def schedule_meeting(body: MeetingCreate):
     with get_db() as conn:
         conn.execute(
             """INSERT INTO meetings
-               (id, contact_id, title, scheduled_at, duration_mins, location, agenda, status, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
+               (id, contact_id, title, scheduled_at, duration_mins, location, agenda, status, approval_status, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (mid, body.contact_id, body.title, body.scheduled_at,
-             body.duration_mins, body.location, agenda, "Scheduled", now),
+             body.duration_mins, body.location, agenda, "Scheduled", "pending", now),
         )
         # Advance stage
         conn.execute(
             "UPDATE contacts SET stage='Meeting Scheduled', updated_at=? WHERE id=? AND stage IN ('Identified','Contacted')",
             (now, body.contact_id),
         )
-    return {"id": mid, "agenda": agenda, "status": "Scheduled"}
+    return {"id": mid, "agenda": agenda, "status": "Scheduled", "approval_status": "pending"}
 
 
 @app.get("/meetings")
@@ -868,10 +894,10 @@ def submit_feedback(body: FeedbackCreate):
     fid = str(uuid.uuid4())
     with get_db() as conn:
         conn.execute(
-            "INSERT INTO feedback (id, contact_id, message, sentiment, response, created_at) VALUES (?,?,?,?,?,?)",
-            (fid, body.contact_id, body.message, sentiment, ai_response, now),
+            "INSERT INTO feedback (id, contact_id, message, sentiment, response, approval_status, created_at) VALUES (?,?,?,?,?,?,?)",
+            (fid, body.contact_id, body.message, sentiment, ai_response, "pending", now),
         )
-    return {"id": fid, "sentiment": sentiment, "response": ai_response}
+    return {"id": fid, "sentiment": sentiment, "response": ai_response, "approval_status": "pending"}
 
 
 @app.get("/feedback")
@@ -1016,7 +1042,10 @@ def get_funnel():
             "(SELECT COUNT(*) FROM meetings) as meetings, "
             "(SELECT COUNT(*) FROM orders) as orders, "
             "(SELECT COALESCE(SUM(quantity_tons * unit_price_usd), 0) FROM orders WHERE status != 'Cancelled') as pipeline_usd, "
-            "(SELECT COUNT(*) FROM leads WHERE status='New') as new_leads "
+            "(SELECT COUNT(*) FROM leads WHERE status='New') as new_leads, "
+            "(SELECT COUNT(*) FROM emails WHERE approval_status='pending') + "
+            "(SELECT COUNT(*) FROM meetings WHERE approval_status='pending') + "
+            "(SELECT COUNT(*) FROM feedback WHERE approval_status='pending') as pending_approvals "
             "FROM contacts"
         ).fetchone()
     stage_counts = {r["stage"]: r["count"] for r in rows}
@@ -1055,8 +1084,8 @@ def run_agent(body: AgentRunRequest):
         eid = str(uuid.uuid4())
         with get_db() as conn:
             conn.execute(
-                "INSERT INTO emails (id, contact_id, subject, body, status, created_at) VALUES (?,?,?,?,?,?)",
-                (eid, body.contact_id, email_data["subject"], email_data["body"], "Draft", now),
+                "INSERT INTO emails (id, contact_id, subject, body, status, approval_status, created_at) VALUES (?,?,?,?,?,?,?)",
+                (eid, body.contact_id, email_data["subject"], email_data["body"], "Draft", "pending", now),
             )
         return {"action": "email_generated", "email_id": eid, **email_data}
 
@@ -1095,6 +1124,79 @@ def run_agent(body: AgentRunRequest):
                 "Please specify a contact and task."
             )
         return {"action": "agent_response", "response": result}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Routes – Approvals
+# ──────────────────────────────────────────────────────────────────────────────
+
+_APPROVAL_TABLES = {"emails": "emails", "meetings": "meetings", "feedback": "feedback"}
+
+# Pre-built approve/reject queries keyed by comm_type to avoid any f-string SQL construction
+_APPROVE_QUERIES = {
+    "emails":   "UPDATE emails   SET approval_status='approved' WHERE id=? AND approval_status='pending'",
+    "meetings": "UPDATE meetings SET approval_status='approved' WHERE id=? AND approval_status='pending'",
+    "feedback": "UPDATE feedback SET approval_status='approved' WHERE id=? AND approval_status='pending'",
+}
+_REJECT_QUERIES = {
+    "emails":   "UPDATE emails   SET approval_status='rejected' WHERE id=? AND approval_status='pending'",
+    "meetings": "UPDATE meetings SET approval_status='rejected' WHERE id=? AND approval_status='pending'",
+    "feedback": "UPDATE feedback SET approval_status='rejected' WHERE id=? AND approval_status='pending'",
+}
+
+
+@app.get("/approvals")
+def list_approvals():
+    """Return all outgoing communications pending manager approval."""
+    with get_db() as conn:
+        pending_emails = conn.execute(
+            "SELECT e.*, c.name as contact_name, c.company FROM emails e "
+            "JOIN contacts c ON e.contact_id = c.id "
+            "WHERE e.approval_status = 'pending' ORDER BY e.created_at DESC"
+        ).fetchall()
+        pending_meetings = conn.execute(
+            "SELECT m.*, c.name as contact_name, c.company FROM meetings m "
+            "JOIN contacts c ON m.contact_id = c.id "
+            "WHERE m.approval_status = 'pending' ORDER BY m.created_at DESC"
+        ).fetchall()
+        pending_feedback = conn.execute(
+            "SELECT f.*, c.name as contact_name, c.company FROM feedback f "
+            "JOIN contacts c ON f.contact_id = c.id "
+            "WHERE f.approval_status = 'pending' ORDER BY f.created_at DESC"
+        ).fetchall()
+    emails_list = [dict(r) for r in pending_emails]
+    meetings_list = [dict(r) for r in pending_meetings]
+    feedback_list = [dict(r) for r in pending_feedback]
+    return {
+        "emails": emails_list,
+        "meetings": meetings_list,
+        "feedback": feedback_list,
+        "total": len(emails_list) + len(meetings_list) + len(feedback_list),
+    }
+
+
+@app.post("/approvals/{comm_type}/{item_id}/approve")
+def approve_item(comm_type: str, item_id: str):
+    """Approve a pending outgoing communication."""
+    if comm_type not in _APPROVE_QUERIES:
+        raise HTTPException(status_code=400, detail=f"Invalid type. Choose from: {list(_APPROVAL_TABLES)}")
+    with get_db() as conn:
+        result = conn.execute(_APPROVE_QUERIES[comm_type], (item_id,))
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Item not found or not pending approval")
+    return {"message": "Approved", "id": item_id, "comm_type": comm_type}
+
+
+@app.post("/approvals/{comm_type}/{item_id}/reject")
+def reject_item(comm_type: str, item_id: str):
+    """Reject a pending outgoing communication."""
+    if comm_type not in _REJECT_QUERIES:
+        raise HTTPException(status_code=400, detail=f"Invalid type. Choose from: {list(_APPROVAL_TABLES)}")
+    with get_db() as conn:
+        result = conn.execute(_REJECT_QUERIES[comm_type], (item_id,))
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Item not found or not pending approval")
+    return {"message": "Rejected", "id": item_id, "comm_type": comm_type}
 
 
 @app.get("/health")
