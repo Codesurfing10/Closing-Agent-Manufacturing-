@@ -229,15 +229,15 @@ _SEED_CONTACTS = [
 
 def _migrate_db():
     """Add approval_status columns to existing databases that predate this feature."""
-    migrations = [
-        ("emails",   "approval_status", "TEXT NOT NULL DEFAULT 'approved'"),
-        ("meetings", "approval_status", "TEXT NOT NULL DEFAULT 'approved'"),
-        ("feedback", "approval_status", "TEXT NOT NULL DEFAULT 'approved'"),
+    migration_sqls = [
+        "ALTER TABLE emails   ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved'",
+        "ALTER TABLE meetings ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved'",
+        "ALTER TABLE feedback ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved'",
     ]
     with get_db() as conn:
-        for table, column, col_def in migrations:
+        for sql in migration_sqls:
             try:
-                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
+                conn.execute(sql)
             except Exception:
                 pass  # column already exists
 
@@ -1132,6 +1132,18 @@ def run_agent(body: AgentRunRequest):
 
 _APPROVAL_TABLES = {"emails": "emails", "meetings": "meetings", "feedback": "feedback"}
 
+# Pre-built approve/reject queries keyed by comm_type to avoid any f-string SQL construction
+_APPROVE_QUERIES = {
+    "emails":   "UPDATE emails   SET approval_status='approved' WHERE id=? AND approval_status='pending'",
+    "meetings": "UPDATE meetings SET approval_status='approved' WHERE id=? AND approval_status='pending'",
+    "feedback": "UPDATE feedback SET approval_status='approved' WHERE id=? AND approval_status='pending'",
+}
+_REJECT_QUERIES = {
+    "emails":   "UPDATE emails   SET approval_status='rejected' WHERE id=? AND approval_status='pending'",
+    "meetings": "UPDATE meetings SET approval_status='rejected' WHERE id=? AND approval_status='pending'",
+    "feedback": "UPDATE feedback SET approval_status='rejected' WHERE id=? AND approval_status='pending'",
+}
+
 
 @app.get("/approvals")
 def list_approvals():
@@ -1166,14 +1178,10 @@ def list_approvals():
 @app.post("/approvals/{comm_type}/{item_id}/approve")
 def approve_item(comm_type: str, item_id: str):
     """Approve a pending outgoing communication."""
-    if comm_type not in _APPROVAL_TABLES:
+    if comm_type not in _APPROVE_QUERIES:
         raise HTTPException(status_code=400, detail=f"Invalid type. Choose from: {list(_APPROVAL_TABLES)}")
-    table = _APPROVAL_TABLES[comm_type]
     with get_db() as conn:
-        result = conn.execute(
-            f"UPDATE {table} SET approval_status='approved' WHERE id=? AND approval_status='pending'",
-            (item_id,),
-        )
+        result = conn.execute(_APPROVE_QUERIES[comm_type], (item_id,))
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="Item not found or not pending approval")
     return {"message": "Approved", "id": item_id, "comm_type": comm_type}
@@ -1182,14 +1190,10 @@ def approve_item(comm_type: str, item_id: str):
 @app.post("/approvals/{comm_type}/{item_id}/reject")
 def reject_item(comm_type: str, item_id: str):
     """Reject a pending outgoing communication."""
-    if comm_type not in _APPROVAL_TABLES:
+    if comm_type not in _REJECT_QUERIES:
         raise HTTPException(status_code=400, detail=f"Invalid type. Choose from: {list(_APPROVAL_TABLES)}")
-    table = _APPROVAL_TABLES[comm_type]
     with get_db() as conn:
-        result = conn.execute(
-            f"UPDATE {table} SET approval_status='rejected' WHERE id=? AND approval_status='pending'",
-            (item_id,),
-        )
+        result = conn.execute(_REJECT_QUERIES[comm_type], (item_id,))
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="Item not found or not pending approval")
     return {"message": "Rejected", "id": item_id, "comm_type": comm_type}

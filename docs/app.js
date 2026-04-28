@@ -323,9 +323,7 @@ async function loadEmails() {
           </div>
           <div class="list-card-body">${e.body}</div>
           <div class="list-card-actions">
-            ${e.status === "Draft" && e.approval_status === "approved" ? `<button class="btn btn-sm btn-primary" onclick="sendEmail('${e.id}')"><i data-feather="send"></i> Mark Sent</button>` : ""}
-            ${e.status === "Draft" && e.approval_status === "pending" ? `<span style="color:var(--warn);font-size:12px"><i data-feather="clock"></i> Awaiting approval</span>` : ""}
-            ${e.approval_status === "rejected" ? `<span style="color:var(--danger);font-size:12px"><i data-feather="x-circle"></i> Rejected — cannot be sent</span>` : ""}
+            ${emailActionHtml(e)}
           </div>
         </div>`
       )
@@ -808,9 +806,23 @@ $$(".chip").forEach((chip) => {
 
 /* ── Approvals ────────────────────────────────────────────────── */
 function approvalPill(status) {
-  const cls = "approval-" + (status || "approved");
+  const normalized = status || "pending";
+  const cls = "approval-" + normalized;
   const labels = { pending: "Pending Approval", approved: "Approved", rejected: "Rejected" };
-  return `<span class="approval-pill ${cls}">${labels[status] || status}</span>`;
+  return `<span class="approval-pill ${cls}">${labels[normalized] || normalized}</span>`;
+}
+
+function emailActionHtml(email) {
+  if (email.approval_status === "rejected") {
+    return `<span style="color:var(--danger);font-size:12px"><i data-feather="x-circle"></i> Rejected — cannot be sent</span>`;
+  }
+  if (email.status === "Draft" && email.approval_status === "approved") {
+    return `<button class="btn btn-sm btn-primary" onclick="sendEmail('${email.id}')"><i data-feather="send"></i> Mark Sent</button>`;
+  }
+  if (email.status === "Draft" && email.approval_status === "pending") {
+    return `<span style="color:var(--warn);font-size:12px"><i data-feather="clock"></i> Awaiting approval</span>`;
+  }
+  return "";
 }
 
 function updateApprovalsBadge(count) {
