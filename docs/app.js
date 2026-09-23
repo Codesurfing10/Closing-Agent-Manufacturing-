@@ -481,33 +481,86 @@ async function submitScheduleMeeting() {
 $("#btn-schedule-meeting").addEventListener("click", () => _openScheduleMeetingModal(null));
 
 /* ── Orders ───────────────────────────────────────────────────── */
+function _qtyLabel(product) {
+  const p = (product || "").toUpperCase();
+  if (p.includes("LCP061000") || p.includes("LCSS61000") || p.includes("LCA061000") || p.includes("LC-FLOW")) {
+    return { qty: "packs", price: "/pack" };
+  }
+  return { qty: "tons", price: "/ton" };
+}
+
+function _mfgBlock(o, job) {
+  if (!job) {
+    return `<div class="list-card-body" style="color:var(--text-muted);font-size:0.9em">
+      No manufacturing job yet. Set status to <strong>Confirmed</strong> (with optional PO) to enqueue Xometry handoff.
+      <br/><em>Real Xometry placement stays on xometry.com until PunchOut/API exists.</em>
+    </div>`;
+  }
+  const mode = job.mode || "?";
+  const st = job.status || "?";
+  const po = o.po_number || job.po_number || "—";
+  const eta = job.eta_ship_date || "—";
+  const track = job.tracking_number || "—";
+  const sku = job.sku || "—";
+  let actions = "";
+  if (st === "awaiting_human" || st === "queued") {
+    actions += `<button class="btn btn-primary btn-sm" onclick="approveXometryHandoff('${job.id}')">Approve Xometry handoff</button> `;
+  }
+  if (mode === "mock" && !["delivered","cancelled","error"].includes(st) && st !== "queued" && st !== "awaiting_human") {
+    actions += `<button class="btn btn-secondary btn-sm" onclick="mockAdvanceJob('${job.id}')">Mock advance</button> `;
+  } else if (mode === "mock" && (st === "queued" || st === "awaiting_human")) {
+    actions += `<span style="color:var(--text-muted);font-size:0.85em">Approve first, then Mock advance</span>`;
+  }
+  return `<div class="list-card-body">
+    <div><strong>Manufacturing</strong> · mode=<code>${mode}</code> · job=${statusPill(st)} · SKU ${sku} · ${job.process || "?"} / ${job.material || "?"}</div>
+    <div class="list-card-meta">PO: ${po} · ETA ship: ${eta} · Tracking: ${track} · xometry_job: ${job.xometry_job_id || "—"}</div>
+    <div style="margin-top:6px;font-size:0.85em;color:var(--text-muted)">Real placement is on Xometry web until PunchOut/API exists. Closing Agent never auto-charges.</div>
+    <div class="list-card-actions" style="margin-top:8px">${actions}</div>
+  </div>`;
+}
+
 async function loadOrders() {
   try {
     const orders = await api("/orders");
+    const jobs = await api("/manufacturing/jobs").catch(() => []);
+    const byOrder = {};
+    (jobs || []).forEach((j) => {
+      if (!byOrder[j.order_id]) byOrder[j.order_id] = j;
+    });
     const el = $("#orders-list");
     if (!orders.length) {
       el.innerHTML = '<p style="color:var(--text-muted)">No orders yet.</p>';
       return;
     }
     el.innerHTML = orders
-      .map(
-        (o) => `
+      .map((o) => {
+        const ql = _qtyLabel(o.product);
+        const job = byOrder[o.id];
+        const confirmPo = o.status === "Pending"
+          ? `<div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+               <input id="po-${o.id}" class="form-input" style="width:160px" placeholder="PO number (optional)" value="${o.po_number || ""}" />
+               <button class="btn btn-secondary btn-sm" onclick="confirmOrderWithPo('${o.id}')">Confirm (PO acquired)</button>
+             </div>`
+          : (o.po_number ? `<div class="list-card-meta">PO: ${o.po_number}</div>` : "");
+        return `
         <div class="list-card">
           <div class="list-card-header">
             <div>
               <div class="list-card-title">${o.product}</div>
-              <div class="list-card-meta">${o.contact_name} (${o.company}) · ${o.quantity_tons} tons · ${fmtUSD(o.unit_price_usd)}/ton · Total: ${fmtUSD(o.quantity_tons * o.unit_price_usd)}</div>
+              <div class="list-card-meta">${o.contact_name} (${o.company}) · ${o.quantity_tons} ${ql.qty} · ${fmtUSD(o.unit_price_usd)}${ql.price} · Total: ${fmtUSD(o.quantity_tons * o.unit_price_usd)}</div>
             </div>
             ${statusPill(o.status)}
           </div>
           ${o.notes ? `<div class="list-card-body">${o.notes}</div>` : ""}
+          ${confirmPo}
+          ${_mfgBlock(o, job)}
           <div class="list-card-actions">
             <select class="form-select" style="width:180px" onchange="updateOrderStatus('${o.id}',this.value)">
               ${["Pending","Confirmed","In Production","Shipped","Delivered","Cancelled"].map((s) => `<option${s === o.status ? " selected" : ""}>${s}</option>`).join("")}
             </select>
           </div>
-        </div>`
-      )
+        </div>`;
+      })
       .join("");
     feather.replace();
   } catch (e) {
@@ -515,9 +568,50 @@ async function loadOrders() {
   }
 }
 
+async function confirmOrderWithPo(id) {
+  const poEl = document.getElementById("po-" + id);
+  const po = poEl ? poEl.value.trim() : "";
+  try {
+    const body = { status: "Confirmed" };
+    if (po) body.po_number = po;
+    const res = await put(`/orders/${id}/status`, body);
+    showToast(res.manufacturing ? "Confirmed — manufacturing job created" : "Order confirmed");
+    loadOrders();
+  } catch (e) {
+    showToast("Error: " + e.message, "error");
+  }
+}
+
+async function approveXometryHandoff(jobId) {
+  try {
+    await post(`/manufacturing/jobs/${jobId}/approve-xometry`, {});
+    showToast("Xometry handoff approved → submitted");
+    loadOrders();
+  } catch (e) {
+    showToast("Error: " + e.message, "error");
+  }
+}
+
+async function mockAdvanceJob(jobId) {
+  try {
+    const res = await post(`/manufacturing/jobs/${jobId}/mock-advance`, {});
+    const st = res.job && res.job.status;
+    showToast("Mock advanced → " + (st || "updated") + (res.order_status ? " (order: " + res.order_status + ")" : ""));
+    loadOrders();
+  } catch (e) {
+    showToast("Error: " + e.message, "error");
+  }
+}
+
 async function updateOrderStatus(id, status) {
   try {
-    await put(`/orders/${id}/status`, { status });
+    const body = { status };
+    if (status === "Confirmed") {
+      const poEl = document.getElementById("po-" + id);
+      const po = poEl && poEl.value.trim();
+      if (po) body.po_number = po;
+    }
+    await put(`/orders/${id}/status`, body);
     showToast("Order updated");
     loadOrders();
   } catch (e) {
@@ -532,9 +626,10 @@ $("#btn-create-order").addEventListener("click", async () => {
   openModal(`
     <h2>Create Order</h2>
     <div class="form-group"><label class="form-label">Contact *</label><select id="co-contact" class="form-select">${opts}</select></div>
-    <div class="form-group"><label class="form-label">Product *</label><input id="co-product" class="form-input" placeholder="e.g. Virgin PET Resin – Grade A" /></div>
-    <div class="form-group"><label class="form-label">Quantity (tons) *</label><input id="co-qty" class="form-input" type="number" step="0.1" placeholder="50" /></div>
-    <div class="form-group"><label class="form-label">Unit Price (USD/ton) *</label><input id="co-price" class="form-input" type="number" step="0.01" placeholder="1250" /></div>
+    <div class="form-group"><label class="form-label">Product / SKU *</label><input id="co-product" class="form-input" placeholder="e.g. LCP061000 or Virgin PET Resin" /></div>
+    <div class="form-group"><label class="form-label">Quantity (packs for LC-Flow SKUs; tons for legacy PET) *</label><input id="co-qty" class="form-input" type="number" step="0.1" placeholder="2" /></div>
+    <div class="form-group"><label class="form-label">Unit Price (USD) *</label><input id="co-price" class="form-input" type="number" step="0.01" placeholder="145.38" /></div>
+    <div class="form-group"><label class="form-label">PO number (optional)</label><input id="co-po" class="form-input" placeholder="PO-12345" /></div>
     <div class="form-group"><label class="form-label">Notes</label><textarea id="co-notes" class="form-textarea"></textarea></div>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
@@ -549,13 +644,16 @@ async function submitCreateOrder() {
   const product = $("#co-product").value.trim();
   if (!product || isNaN(qty) || isNaN(price)) return showToast("Product, quantity and price are required", "error");
   try {
-    const res = await post("/orders", {
+    const payload = {
       contact_id: $("#co-contact").value,
       product,
       quantity_tons: qty,
       unit_price_usd: price,
       notes: $("#co-notes").value.trim(),
-    });
+    };
+    const po = ($("#co-po") && $("#co-po").value.trim()) || "";
+    if (po) payload.po_number = po;
+    const res = await post("/orders", payload);
     closeModal();
     showToast(`Order created – Total: ${fmtUSD(res.total_usd)}`);
     navigate("orders");
@@ -996,6 +1094,9 @@ Object.assign(window, {
   submitCreateOrder,
   submitFeedback,
   updateOrderStatus,
+  confirmOrderWithPo,
+  approveXometryHandoff,
+  mockAdvanceJob,
   closeModal,
   submitAddContact,
   openGenerateEmail,

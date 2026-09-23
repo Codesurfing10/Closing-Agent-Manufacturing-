@@ -41,6 +41,7 @@ An AI-powered sales agent for the **LC-Flow Valve and Distribution Adaptor** (PT
 - **Email Generation** – AI-crafted outreach (NDA-first when unsigned)
 - **Meeting Scheduler** – Book meetings with AI-generated agendas (NDA confirmation as item #1 when unsigned)
 - **Order Management** – Create and track orders from Pending → Delivered
+- **Xometry manufacturing handoff** – On `Confirmed` (+ optional PO), enqueue mock/manual manufacturing job with human approve gate (no auto-charge)
 - **Feedback Handler** – Log customer feedback and get an AI-written response
 - **Multi-industry Lead Generation** – Aerospace, Beverage/PET, PET Air Conveyors, Automotive Engineering (`industry_focus` on `POST /leads/generate`)
 - **AI Agent Chat** – Natural-language interface to run any sales task
@@ -65,6 +66,8 @@ Offline CRM exports and sales collateral live under [`deliverables/`](deliverabl
 | `opportunities.json` / `.csv` | 14 opportunities, pipeline ~$302,918.72, all NDA Pending |
 | `NDA_TEMPLATE.md` | Mutual NDA template (**counsel review required before customer use**) |
 | `SALES_BRIEF.md` | Pitch, ICP, top opportunities, NDA workflow, curl examples |
+| `XOMETRY_INTEGRATION_RESEARCH.md` | API gap research + recommended architecture |
+| `XOMETRY_HANDOFF.md` | Operator guide for mock/manual Xometry flow |
 
 ---
 
@@ -108,6 +111,17 @@ API docs available at `http://localhost:8000/docs`.
 
 ---
 
+
+## Xometry manufacturing handoff (mock + manual)
+
+There is **no public buyer Instant Quote / place-order API**. Closing Agent ships a handoff layer that works offline today and never auto-charges.
+
+**Flow (prose):** Customer PO received → `PUT /orders/{id}/status` with `status=Confirmed` and optional `po_number` → `on_po_acquired` creates an idempotent `manufacturing_jobs` row → mode `mock` starts `queued` with fake quote/job IDs and ETA; mode `manual` starts `awaiting_human` with an RFQ checklist → human clicks **Approve Xometry handoff** (`POST /manufacturing/jobs/{id}/approve-xometry`) → status `submitted` (manual: you still place the order on xometry.com) → in `mock`, **Mock advance** steps `submitted` → `in_production` → `shipped` → `delivered` and mirrors the order status. Mode `api` returns a clear error unless `XOMETRY_API_KEY` is set; even then approve is required and no paid placement is called.
+
+SKU map: `LCP061000` → FDM / PC-ISO · `LCSS61000` → DMLS / Stainless Steel 316/L · `LCA061000` → DMLS / Aluminum AlSi10Mg.
+
+Operator guide: [`deliverables/XOMETRY_HANDOFF.md`](deliverables/XOMETRY_HANDOFF.md). Research: [`deliverables/XOMETRY_INTEGRATION_RESEARCH.md`](deliverables/XOMETRY_INTEGRATION_RESEARCH.md).
+
 ## Enable GitHub Pages
 
 1. Go to **Settings → Pages** in this repo.
@@ -130,8 +144,14 @@ API docs available at `http://localhost:8000/docs`.
 | `POST` | `/emails/generate` | AI-generate outreach email (NDA-gated) |
 | `POST` | `/emails/{id}/send` | Mark email sent |
 | `POST` | `/meetings` | Schedule meeting + AI agenda (NDA-gated) |
-| `POST` | `/orders` | Create order |
-| `PUT` | `/orders/{id}/status` | Update order status |
+| `POST` | `/orders` | Create order (optional `status`, `po_number`) |
+| `PUT` | `/orders/{id}/status` | Update order status (+ optional `po_number`; Confirmed enqueues mfg job) |
+| `GET` | `/orders/{id}/manufacturing` | Manufacturing job for order |
+| `GET` | `/manufacturing/jobs` | List manufacturing jobs |
+| `GET` | `/manufacturing/jobs/{id}` | Get job |
+| `PUT` | `/manufacturing/jobs/{id}/status` | Update job status (mirrors order when in_production/shipped/delivered) |
+| `POST` | `/manufacturing/jobs/{id}/approve-xometry` | Human gate → submitted (no auto-charge) |
+| `POST` | `/manufacturing/jobs/{id}/mock-advance` | Mock-only: step one stage forward |
 | `POST` | `/feedback` | Log feedback + AI response |
 | `GET` | `/funnel` | Funnel stats & dashboard data |
 | `GET` / `POST` | `/inventory` | List / create inventory items |
@@ -159,8 +179,21 @@ Full interactive docs: `<API_URL>/docs`
 | `ALLOWED_ORIGINS` | Yes | Comma-separated list of allowed CORS origins (your GitHub Pages URL) |
 | `DB_PATH` | No | SQLite file path (default: `closing_agent.db`) |
 | `LEAD_GEN_INTERVAL_SECS` | No | How often the background lead generator runs in seconds (default: `86400` = 24 h) |
+| `XOMETRY_MODE` | No | `mock` (default) \| `manual` \| `api` |
+| `XOMETRY_API_KEY` | No | Partner/API key; without it `api` mode errors. Never auto-charges. |
+| `XOMETRY_API_BASE` | No | Default `https://api.developer.xometry.com` |
+| `XOMETRY_MOCK_LEAD_DAYS` | No | Mock ETA lead time (default `10`) |
+| `XOMETRY_SHIP_TO_JSON` | No | Default ship-to JSON for RFQ checklist |
+| `XOMETRY_CAD_DIR` | No | Local/secure CAD directory hint for checklist |
 
 ---
+
+## Changelog — LC-Flow 1.2.0 (Xometry handoff)
+
+- `manufacturing_jobs` table + `orders.po_number`
+- Hook on Confirmed → mock/manual Xometry job; human `approve-xometry` gate
+- UI: PO field, mfg status, Approve / Mock advance
+- Docs: `XOMETRY_HANDOFF.md`, research committed
 
 ## Changelog — LC-Flow 1.1.0
 

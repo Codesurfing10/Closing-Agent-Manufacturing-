@@ -20,6 +20,18 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from xometry import (
+    approve_xometry_job,
+    get_job,
+    get_job_for_order,
+    list_jobs as list_mfg_jobs,
+    mock_advance_job,
+    on_po_acquired,
+    update_job_status as update_mfg_job_status,
+    xometry_config_summary,
+)
+from xometry.service import ensure_schema as ensure_mfg_schema
+
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
@@ -186,6 +198,8 @@ def init_db():
 
         """)
     _migrate_db()
+    with get_db() as conn:
+        ensure_mfg_schema(conn)
     _seed_contacts()
     _seed_inventory()
 
@@ -282,6 +296,7 @@ def _migrate_db():
         "ALTER TABLE meetings ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved'",
         "ALTER TABLE feedback ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved'",
         "ALTER TABLE contacts ADD COLUMN nda_signed INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE orders ADD COLUMN po_number TEXT",
     ]
     with get_db() as conn:
         for sql in migration_sqls:
@@ -798,9 +813,17 @@ class OrderCreate(BaseModel):
     quantity_tons: float
     unit_price_usd: float
     notes: Optional[str] = ""
+    status: Optional[str] = "Pending"
+    po_number: Optional[str] = None
 
 class OrderStatusUpdate(BaseModel):
     status: str
+    po_number: Optional[str] = None
+
+class ManufacturingJobStatusUpdate(BaseModel):
+    status: str
+    tracking_number: Optional[str] = None
+    notes: Optional[str] = None
 
 class FeedbackCreate(BaseModel):
     contact_id: str
@@ -898,7 +921,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(
     title="Closing Agent Manufacturing — LC-Flow",
     description="AI-powered sales agent for LC-Flow Valve / industrial manufacturing (NDA-gated)",
-    version="1.1.0",
+    version="1.2.0",
     lifespan=lifespan,
 )
 
@@ -1125,23 +1148,33 @@ def create_order(body: OrderCreate):
         row = conn.execute("SELECT id FROM contacts WHERE id=?", (body.contact_id,)).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Contact not found")
+    initial_status = body.status or "Pending"
+    if initial_status not in ORDER_STATUSES:
+        raise HTTPException(status_code=400, detail=f"Invalid status. Choose from: {ORDER_STATUSES}")
     now = datetime.utcnow().isoformat()
     oid = str(uuid.uuid4())
     total = body.quantity_tons * body.unit_price_usd
+    mfg = None
     with get_db() as conn:
+        ensure_mfg_schema(conn)
         conn.execute(
             """INSERT INTO orders
-               (id, contact_id, product, quantity_tons, unit_price_usd, status, notes, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
+               (id, contact_id, product, quantity_tons, unit_price_usd, status, notes, created_at, updated_at, po_number)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (oid, body.contact_id, body.product, body.quantity_tons,
-             body.unit_price_usd, "Pending", body.notes, now, now),
+             body.unit_price_usd, initial_status, body.notes, now, now, body.po_number),
         )
         # Advance stage to Closed Won
         conn.execute(
             "UPDATE contacts SET stage='Closed Won', updated_at=? WHERE id=?",
             (now, body.contact_id),
         )
-    return {"id": oid, "total_usd": total, "status": "Pending"}
+        if initial_status == "Confirmed":
+            mfg = on_po_acquired(conn, oid, po_number=body.po_number)
+    out = {"id": oid, "total_usd": total, "status": initial_status, "po_number": body.po_number}
+    if mfg:
+        out["manufacturing"] = mfg
+    return out
 
 
 @app.get("/orders")
@@ -1166,14 +1199,102 @@ def update_order_status(order_id: str, body: OrderStatusUpdate):
     if body.status not in ORDER_STATUSES:
         raise HTTPException(status_code=400, detail=f"Invalid status. Choose from: {ORDER_STATUSES}")
     now = datetime.utcnow().isoformat()
+    mfg = None
     with get_db() as conn:
-        result = conn.execute(
-            "UPDATE orders SET status=?, updated_at=? WHERE id=?",
-            (body.status, now, order_id),
-        )
-        if result.rowcount == 0:
+        ensure_mfg_schema(conn)
+        row = conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
+        if not row:
             raise HTTPException(status_code=404, detail="Order not found")
-    return {"message": "Order status updated", "status": body.status}
+        if body.po_number is not None:
+            conn.execute(
+                "UPDATE orders SET status=?, po_number=?, updated_at=? WHERE id=?",
+                (body.status, body.po_number, now, order_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE orders SET status=?, updated_at=? WHERE id=?",
+                (body.status, now, order_id),
+            )
+        if body.status == "Confirmed":
+            mfg = on_po_acquired(conn, order_id, po_number=body.po_number)
+    out = {"message": "Order status updated", "status": body.status, "po_number": body.po_number}
+    if mfg:
+        out["manufacturing"] = mfg
+    return out
+
+
+@app.get("/orders/{order_id}/manufacturing")
+def get_order_manufacturing(order_id: str):
+    with get_db() as conn:
+        ensure_mfg_schema(conn)
+        row = conn.execute("SELECT id FROM orders WHERE id=?", (order_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Order not found")
+        job = get_job_for_order(conn, order_id)
+    if not job:
+        return {"order_id": order_id, "job": None}
+    return {"order_id": order_id, "job": job}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Routes – Manufacturing / Xometry handoff
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.get("/manufacturing/jobs")
+def api_list_manufacturing_jobs(order_id: Optional[str] = None):
+    with get_db() as conn:
+        return list_mfg_jobs(conn, order_id=order_id)
+
+
+@app.get("/manufacturing/jobs/{job_id}")
+def api_get_manufacturing_job(job_id: str):
+    with get_db() as conn:
+        job = get_job(conn, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Manufacturing job not found")
+    return job
+
+
+@app.put("/manufacturing/jobs/{job_id}/status")
+def api_update_manufacturing_job_status(job_id: str, body: ManufacturingJobStatusUpdate):
+    try:
+        with get_db() as conn:
+            result = update_mfg_job_status(
+                conn,
+                job_id,
+                body.status,
+                tracking_number=body.tracking_number,
+                notes=body.notes,
+            )
+        return result
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Manufacturing job not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/manufacturing/jobs/{job_id}/approve-xometry")
+def api_approve_xometry(job_id: str):
+    """Human gate before treating a job as submitted. Never auto-charges Xometry."""
+    try:
+        with get_db() as conn:
+            return approve_xometry_job(conn, job_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Manufacturing job not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/manufacturing/jobs/{job_id}/mock-advance")
+def api_mock_advance(job_id: str):
+    """Mock-only helper: step job forward one stage and mirror order status."""
+    try:
+        with get_db() as conn:
+            return mock_advance_job(conn, job_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Manufacturing job not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1728,4 +1849,10 @@ def create_opportunity(body: OpportunityCreate):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "timestamp": datetime.utcnow().isoformat(), "product": "LC-Flow Valve"}
+    payload = {
+        "status": "ok",
+        "timestamp": datetime.utcnow().isoformat(),
+        "product": "LC-Flow Valve",
+    }
+    payload.update(xometry_config_summary())
+    return payload
