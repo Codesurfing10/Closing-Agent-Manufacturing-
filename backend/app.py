@@ -137,9 +137,57 @@ def init_db():
                 status TEXT DEFAULT 'New',
                 created_at TEXT NOT NULL
             );
+
+
+            CREATE TABLE IF NOT EXISTS inventory (
+                id TEXT PRIMARY KEY,
+                sku TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                description TEXT,
+                material TEXT,
+                unit_price_usd REAL,
+                units_per_pack INTEGER DEFAULT 2,
+                stock_qty INTEGER DEFAULT 0,
+                category TEXT,
+                manufacturer TEXT,
+                distributor TEXT,
+                notes TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS opportunities (
+                id TEXT PRIMARY KEY,
+                company TEXT NOT NULL,
+                contact_name TEXT,
+                industry TEXT,
+                recommended_sku TEXT,
+                estimated_quantity INTEGER,
+                unit_price_usd REAL,
+                estimated_deal_value_usd REAL,
+                stage TEXT DEFAULT 'Prospecting',
+                next_step TEXT,
+                value_proposition TEXT,
+                nda_required INTEGER DEFAULT 1,
+                nda_status TEXT DEFAULT 'Pending',
+                lead_id TEXT,
+                contact_id TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS ndas (
+                id TEXT PRIMARY KEY,
+                contact_id TEXT,
+                lead_id TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                signed_at TEXT,
+                document_ref TEXT,
+                created_at TEXT NOT NULL
+            );
+
         """)
     _migrate_db()
     _seed_contacts()
+    _seed_inventory()
 
 
 # Pre-populated contacts for PET manufacturing targets
@@ -228,11 +276,12 @@ _SEED_CONTACTS = [
 
 
 def _migrate_db():
-    """Add approval_status columns to existing databases that predate this feature."""
+    """Add columns to existing databases that predate newer features."""
     migration_sqls = [
         "ALTER TABLE emails   ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved'",
         "ALTER TABLE meetings ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved'",
         "ALTER TABLE feedback ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved'",
+        "ALTER TABLE contacts ADD COLUMN nda_signed INTEGER NOT NULL DEFAULT 0",
     ]
     with get_db() as conn:
         for sql in migration_sqls:
@@ -240,6 +289,100 @@ def _migrate_db():
                 conn.execute(sql)
             except Exception:
                 pass  # column already exists
+
+
+_SEED_INVENTORY = [
+    {
+        "sku": "LCP061000",
+        "name": "LC-Flow Valve — Plastic PC-ISO",
+        "description": "LC-Flow Valve and Distribution Adaptor in PC-ISO plastic. Units per listing: 2.",
+        "material": "PC-ISO",
+        "unit_price_usd": 145.38,
+        "units_per_pack": 2,
+        "stock_qty": 50,
+        "category": "Flow Control / Distribution",
+        "manufacturer": "PTC Inc",
+        "distributor": "Industrial and Molecular Solutions",
+        "notes": "PET air conveyors, beverage packaging, non-corrosive pneumatic fluid control.",
+    },
+    {
+        "sku": "LCSS61000",
+        "name": "LC-Flow Valve — Stainless Steel 316L",
+        "description": "LC-Flow Valve and Distribution Adaptor in 316L stainless steel. Units per listing: 2.",
+        "material": "316L Stainless Steel",
+        "unit_price_usd": 558.28,
+        "units_per_pack": 2,
+        "stock_qty": 30,
+        "category": "Flow Control / Distribution",
+        "manufacturer": "PTC Inc",
+        "distributor": "Industrial and Molecular Solutions",
+        "notes": "Corrosion-resistant; aerospace pneumatics, automotive lubrication, washdown.",
+    },
+    {
+        "sku": "LCA061000",
+        "name": "LC-Flow Valve — Aluminum AlSiMg",
+        "description": "LC-Flow Valve and Distribution Adaptor in Aluminum AlSiMg. Units per listing: 2.",
+        "material": "Aluminum AlSiMg",
+        "unit_price_usd": 1545.28,
+        "units_per_pack": 2,
+        "stock_qty": 15,
+        "category": "Flow Control / Distribution",
+        "manufacturer": "PTC Inc",
+        "distributor": "Industrial and Molecular Solutions",
+        "notes": "Lightweight; aerospace MRO, propulsion test, weight-critical automotive/airline.",
+    },
+]
+
+
+def _seed_inventory():
+    """Idempotent seed of LC-Flow SKUs by sku."""
+    now = datetime.utcnow().isoformat()
+    with get_db() as conn:
+        for item in _SEED_INVENTORY:
+            existing = conn.execute(
+                "SELECT id FROM inventory WHERE sku=?", (item["sku"],)
+            ).fetchone()
+            if existing:
+                continue
+            conn.execute(
+                """INSERT INTO inventory
+                   (id, sku, name, description, material, unit_price_usd,
+                    units_per_pack, stock_qty, category, manufacturer,
+                    distributor, notes, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    str(uuid.uuid4()),
+                    item["sku"], item["name"], item["description"], item["material"],
+                    item["unit_price_usd"], item["units_per_pack"], item["stock_qty"],
+                    item["category"], item["manufacturer"], item["distributor"],
+                    item["notes"], now,
+                ),
+            )
+
+
+def _contact_nda_signed(contact_id: Optional[str] = None, lead_id: Optional[str] = None) -> bool:
+    """Return True if an NDA is signed for this contact or lead."""
+    with get_db() as conn:
+        if contact_id:
+            row = conn.execute(
+                "SELECT 1 FROM ndas WHERE contact_id=? AND status='signed' LIMIT 1",
+                (contact_id,),
+            ).fetchone()
+            if row:
+                return True
+            crow = conn.execute(
+                "SELECT nda_signed FROM contacts WHERE id=?", (contact_id,)
+            ).fetchone()
+            if crow and crow["nda_signed"]:
+                return True
+        if lead_id:
+            row = conn.execute(
+                "SELECT 1 FROM ndas WHERE lead_id=? AND status='signed' LIMIT 1",
+                (lead_id,),
+            ).fetchone()
+            if row:
+                return True
+    return False
 
 
 def _seed_contacts():
@@ -311,40 +454,79 @@ def _ai_complete(system: str, user: str) -> str:
 
 
 def _generate_email(contact: dict, context: str = "") -> dict:
+    """Generate outreach; if NDA not signed, request NDA before specs/pricing."""
+    contact_id = contact.get("id")
+    nda_ok = _contact_nda_signed(contact_id=contact_id) if contact_id else bool(contact.get("nda_signed"))
+    industry = contact.get("industry") or "industrial manufacturing"
+    first = contact["name"].split()[0]
+
+    if not nda_ok:
+        system = (
+            "You are a B2B sales copywriter for Industrial and Molecular Solutions / PTC Inc "
+            "selling the LC-Flow Valve and Distribution Adaptor. NDA is NOT yet signed. "
+            "Write a short email (<=150 words) that introduces the product category at a high "
+            "level ONLY and requests that the prospect execute a Mutual NDA before any "
+            "technical specs, drawings, or pricing. Do NOT include unit prices, CAD, or "
+            "detailed process/material specs. Return ONLY JSON with keys 'subject' and 'body'."
+        )
+        user = (
+            f"Write an NDA-first outreach to {contact['name']}, {contact.get('title','')} at "
+            f"{contact['company']} ({industry}). {context}\n"
+            "Return ONLY JSON with keys 'subject' and 'body'."
+        )
+        raw = _ai_complete(system, user)
+        try:
+            data = json.loads(raw)
+            if "subject" in data and "body" in data:
+                data["nda_gate"] = "pending"
+                return data
+        except Exception:
+            pass
+        subject = f"Mutual NDA to explore LC-Flow with {contact['company']}"
+        body = (
+            f"Hi {first},\n\n"
+            f"I'm reaching out from Industrial and Molecular Solutions (PTC Inc manufacturing) "
+            f"regarding our LC-Flow Valve and Distribution Adaptor — apparatus for controlled "
+            f"delivery of vapors, gases, liquids, and sprays used in {industry}.\n\n"
+            f"Before we share technical specifications, drawings, or pricing, we ask all "
+            f"prospects to execute a short Mutual NDA (template available on request). "
+            f"Once signed, we can discuss SKU options (plastic PC-ISO, 316L SS, AlSiMg) "
+            f"and fit for {contact['company']}.\n\n"
+            f"May I send the NDA for your review this week?\n\n"
+            f"Best regards,\nJames Gallagher\nIndustrial and Molecular Solutions\n"
+            f"610-393-1102 | Jgallagher10@gmail.com"
+        )
+        return {"subject": subject, "body": body, "nda_gate": "pending"}
+
     system = (
-        "You are an expert B2B sales copywriter specialising in PET plastic resin "
-        "and packaging materials. Write concise, persuasive outreach emails (≤180 words). "
-        "Always include a clear value proposition and a soft call-to-action."
+        "You are an expert B2B sales copywriter for LC-Flow Valve and Distribution Adaptor "
+        "(PTC Inc / Industrial and Molecular Solutions). NDA IS signed — you may discuss "
+        "technical fit, materials, and list pricing. Write concise persuasive emails (<=180 words). "
+        "Return ONLY JSON with keys 'subject' and 'body'."
     )
     user = (
-        f"Write a cold outreach email to {contact['name']}, {contact['title']} at "
-        f"{contact['company']}. They operate in the PET plastic manufacturing / "
-        f"beverage packaging industry. {context}"
-        f"\nReturn ONLY JSON with keys 'subject' and 'body'."
+        f"Write outreach to {contact['name']}, {contact.get('title','')} at {contact['company']} "
+        f"({industry}). NDA is signed. {context}\nReturn ONLY JSON with keys 'subject' and 'body'."
     )
     raw = _ai_complete(system, user)
     try:
         data = json.loads(raw)
         if "subject" in data and "body" in data:
+            data["nda_gate"] = "signed"
             return data
     except Exception:
         pass
-
-    # Fallback template
-    subject = f"Helping {contact['company']} Reduce PET Resin Costs by 12-18%"
+    subject = f"LC-Flow Valve options for {contact['company']} — next steps"
     body = (
-        f"Hi {contact['name'].split()[0]},\n\n"
-        f"I hope this finds you well. I'm reaching out because we help leading "
-        f"packaging and beverage companies like {contact['company']} secure high-grade "
-        f"recycled PET (rPET) resin at competitive prices while meeting sustainability "
-        f"targets.\n\n"
-        f"Our clients typically see 12-18% cost savings and a 30% improvement in "
-        f"recycled content ratios within the first year.\n\n"
-        f"Would you have 20 minutes this week for a quick call to explore if there's "
-        f"a fit?\n\n"
-        f"Best regards,\n[Your Name]\n[Your Company]"
+        f"Hi {first},\n\n"
+        f"Thanks for executing the NDA. LC-Flow controls flow, distribution, and pressure for "
+        f"vapors, gases, liquids, and sprays — relevant to {industry} at {contact['company']}.\n\n"
+        f"SKUs (pack of 2): LCP061000 PC-ISO $145.38 | LCSS61000 316L SS $558.28 | "
+        f"LCA061000 AlSiMg $1,545.28. Happy to recommend based on environment and duty cycle.\n\n"
+        f"Would 20 minutes this week work for a technical fit discussion?\n\n"
+        f"Best regards,\nJames Gallagher\nIndustrial and Molecular Solutions"
     )
-    return {"subject": subject, "body": body}
+    return {"subject": subject, "body": body, "nda_gate": "signed"}
 
 
 def _generate_feedback_response(contact: dict, feedback_msg: str) -> str:
@@ -371,55 +553,111 @@ def _generate_feedback_response(contact: dict, feedback_msg: str) -> str:
 
 
 def _generate_meeting_agenda(contact: dict, context: str = "") -> str:
+    contact_id = contact.get("id")
+    nda_ok = _contact_nda_signed(contact_id=contact_id) if contact_id else bool(contact.get("nda_signed"))
+    industry = contact.get("industry") or "industrial manufacturing"
+    nda_note = (
+        "NDA is NOT signed — agenda item #1 MUST be Mutual NDA confirmation; "
+        "do not plan to share detailed specs, drawings, or pricing until signed."
+        if not nda_ok else
+        "NDA is signed — technical discussion and pricing OK."
+    )
     system = (
-        "You are a senior B2B sales professional in PET plastic manufacturing. "
-        "Create a concise meeting agenda (3-5 bullet points) for a discovery call."
+        "You are a senior B2B sales professional for LC-Flow Valve (PTC Inc / "
+        "Industrial and Molecular Solutions). Create a concise meeting agenda (3-5 bullets). "
+        + nda_note
     )
     user = (
-        f"Meeting with {contact['name']}, {contact['title']} at {contact['company']}. "
-        f"{context} Generate a short agenda."
+        f"Meeting with {contact['name']}, {contact.get('title','')} at {contact['company']} "
+        f"({industry}). {context} Generate a short agenda."
     )
     result = _ai_complete(system, user)
     if result:
+        if not nda_ok and "NDA" not in result and "nda" not in result.lower():
+            result = "• Confirm Mutual NDA status / execute NDA before technical deep-dive\n" + result
         return result
+    if not nda_ok:
+        return (
+            "• Confirm Mutual NDA status — execute NDA before sharing specs, drawings, or pricing\n"
+            "• High-level LC-Flow category overview (no detailed specs)\n"
+            f"• Understand {contact['company']} flow/distribution pain points in {industry}\n"
+            "• Agree NDA timeline and schedule technical follow-up after signing\n"
+            "• Next steps / owners"
+        )
     return (
-        "• Introductions and company overview\n"
-        "• Current PET resin sourcing volumes and pain points\n"
-        "• rPET sustainability targets and timelines\n"
-        "• How we can support cost reduction goals\n"
-        "• Agree on next steps / pilot programme"
+        "• Confirm NDA on file and introductions\n"
+        f"• Current flow / pneumatic / lubrication needs at {contact['company']}\n"
+        "• SKU fit: PC-ISO vs 316L SS vs AlSiMg\n"
+        "• Sample / pilot quantity and timeline\n"
+        "• Agree on quote and next steps"
     )
 
 
-_LEAD_GEN_TARGETS = [
-    "Alpla", "Berry Global", "Silgan", "Graham Packaging", "Resilux",
-    "Plastipak", "Ring Container Technologies", "TricorBraun", "Pretium Packaging",
-    "Greiner Packaging", "Alpek Polyester", "Far Eastern New Century",
-    "Indorama Ventures", "DAK Americas", "Lotte Chemical",
-    "Danone", "Nestlé Waters", "Keurig Dr Pepper", "Refresco", "Cott Corporation",
-]
+# Industry-focused lead targets for LC-Flow Valve (flow / distribution adaptor)
+_LEAD_GEN_TARGETS = {
+    "Aerospace": [
+        "Boeing", "Lockheed Martin", "Northrop Grumman", "SpaceX", "Spirit AeroSystems",
+        "Collins Aerospace", "Honeywell Aerospace", "Raytheon", "General Dynamics",
+        "Blue Origin",
+    ],
+    "Beverage / PET Packaging": [
+        "Amcor", "Niagara Bottling", "Coca-Cola", "PepsiCo", "Refresco",
+        "Keurig Dr Pepper", "Nestlé Waters", "Danone", "Berry Global", "Plastipak",
+        "Alpla", "Silgan", "Graham Packaging",
+    ],
+    "PET Air Conveyors": [
+        "Sidel", "Krones", "GEA Convair", "SMF", "Effiline", "AMBEC", "FlexLink",
+        "Sacmi", "Tech-Long", "SIPA",
+    ],
+    "Automotive Engineering": [
+        "Bosch", "Continental", "Magna International", "ZF Friedrichshafen",
+        "Stellantis", "Ford Motor Company", "General Motors", "Toyota", "Aptiv",
+        "Schaeffler",
+    ],
+}
+
+_INDUSTRY_RATIONALE = {
+    "Aerospace": (
+        "{company} operates pneumatic/fluidic or propulsion-adjacent systems where "
+        "LC-Flow Valve distribution adaptors improve flow, pressure, and vapor/gas delivery."
+    ),
+    "Beverage / PET Packaging": (
+        "{company} runs PET packaging or bottling lines that need air/lube/spray distribution; "
+        "LC-Flow fits line spares and plant standardization."
+    ),
+    "PET Air Conveyors": (
+        "{company} builds or integrates empty-bottle air conveyors; LC-Flow is a natural "
+        "OEM/spare distribution adaptor for air manifolds."
+    ),
+    "Automotive Engineering": (
+        "{company} uses industrial lubrication, pneumatic fluid control, or powertrain test "
+        "benches where LC-Flow provides precise multi-media distribution."
+    ),
+}
 
 
-def _generate_leads_ai(count: int = 5) -> list[dict]:
-    """Use AI to generate new PET-industry sales leads; fall back to curated templates."""
+def _generate_leads_ai(count: int = 5, industry_focus: Optional[str] = None) -> list[dict]:
+    """Generate LC-Flow sales leads across Aerospace, Beverage/PET, Air Conveyors, Automotive."""
+    industries = list(_LEAD_GEN_TARGETS.keys())
+    focus_note = industry_focus or ("balanced mix across " + ", ".join(industries))
     system = (
-        "You are a B2B lead generation specialist for PET plastic resin and packaging. "
-        "Generate realistic sales prospect profiles for the PET / rPET manufacturing industry. "
-        "Each lead should be a real decision-maker title at a plausible company that buys or "
-        "processes PET resin or packaging. Return ONLY a JSON array with no extra text."
+        "You are a B2B lead generation specialist for the LC-Flow Valve and Distribution "
+        "Adaptor (PTC Inc / Industrial and Molecular Solutions) — apparatus for molecular "
+        "transfer of vapors, gases, liquids, and sprays. Generate realistic decision-maker "
+        "prospects in Aerospace, Beverage/PET packaging, PET empty-bottle air conveyor OEMs, "
+        "and Automotive engineering/manufacturing. Return ONLY a JSON array with no extra text."
     )
     user = (
-        f"Generate exactly {count} new sales leads for a PET plastic resin supplier. "
-        "Target procurement, supply chain, packaging, and sustainability executives at "
-        "beverage, food, personal care, or packaging companies. "
+        f"Generate exactly {count} new sales leads for LC-Flow Valve. Industry focus: {focus_note}. "
+        "Target engineering, procurement, plant, OEM product, and MRO leaders. "
         "Return a JSON array where each element has keys: "
-        "name, title, company, email, phone, linkedin, rationale. "
-        "Make the rationale 1-2 sentences explaining why this is a good prospect. "
+        "name, title, company, email, phone, linkedin, industry, rationale. "
+        "industry must be one of: Aerospace, Beverage / PET Packaging, PET Air Conveyors, "
+        "Automotive Engineering. Rationale: 1-2 sentences on why LC-Flow fits. "
         "Use realistic but fictional contact details."
     )
     raw = _ai_complete(system, user)
     if raw:
-        # Strip markdown code fences if present
         clean = raw.strip()
         if clean.startswith("```"):
             clean = clean.split("```", 2)[1]
@@ -429,37 +667,56 @@ def _generate_leads_ai(count: int = 5) -> list[dict]:
         try:
             leads = json.loads(clean)
             if isinstance(leads, list) and leads:
+                for lead in leads:
+                    if "industry" not in lead or not lead["industry"]:
+                        lead["industry"] = industry_focus or "Beverage / PET Packaging"
                 return leads[:count]
         except Exception:
             pass
 
-    # Fallback: deterministic templates drawn from known targets
     import random
-    titles = [
-        "Director of Procurement", "VP Supply Chain", "Head of Packaging",
-        "Sustainability Manager", "Category Manager – Resins",
-        "Senior Buyer – Packaging Materials", "Global Sourcing Lead",
-    ]
-    first_names = ["Jordan", "Taylor", "Morgan", "Casey", "Riley", "Drew", "Avery", "Quinn"]
-    last_names = ["Rivera", "Nguyen", "Okafor", "Petrov", "Svensson", "Kowalski", "Ahmed"]
-    selected_companies = random.sample(_LEAD_GEN_TARGETS, min(count, len(_LEAD_GEN_TARGETS)))
+    titles_by_industry = {
+        "Aerospace": [
+            "Manager, Pneumatic Systems", "Director Propulsion Test", "Sr. Buyer – Fluid Systems MRO",
+            "Lead Engineer, Ground Support", "Principal Engineer, ECS",
+        ],
+        "Beverage / PET Packaging": [
+            "VP of Procurement", "Head of Supply Chain", "Director of Plant Engineering",
+            "Packaging Equipment Buyer", "Global Packaging Director",
+        ],
+        "PET Air Conveyors": [
+            "Product Manager – Air Conveyors", "Head of Engineering – Intralogistics",
+            "Sales Engineering Manager", "Technical Director", "OEM Partnerships Lead",
+        ],
+        "Automotive Engineering": [
+            "Manager, Powertrain Test Labs", "Director of Manufacturing Engineering",
+            "Sr. Buyer – Fluid Power", "Plant Maintenance Manager", "Category Manager – Pneumatics",
+        ],
+    }
+    first_names = ["Jordan", "Taylor", "Morgan", "Casey", "Riley", "Drew", "Avery", "Quinn", "Sam", "Alex"]
+    last_names = ["Rivera", "Nguyen", "Okafor", "Petrov", "Svensson", "Kowalski", "Ahmed", "Patel", "Brooks"]
+
+    if industry_focus and industry_focus in _LEAD_GEN_TARGETS:
+        pool_industries = [industry_focus] * count
+    else:
+        pool_industries = [industries[i % len(industries)] for i in range(count)]
+
     leads = []
-    for company in selected_companies:
+    for ind in pool_industries:
+        company = random.choice(_LEAD_GEN_TARGETS[ind])
         fn = random.choice(first_names)
         ln = random.choice(last_names)
-        title = random.choice(titles)
-        slug = company.lower().replace(" ", "").replace("-", "")
+        title = random.choice(titles_by_industry[ind])
+        slug = "".join(ch for ch in company.lower() if ch.isalnum())
         leads.append({
             "name": f"{fn} {ln}",
             "title": title,
             "company": company,
             "email": f"{fn.lower()}.{ln.lower()}@{slug}.com",
             "phone": f"+1-{random.randint(200,999)}-555-{random.randint(1000,9999)}",
-            "linkedin": f"linkedin.com/in/{fn.lower()}-{ln.lower()}-{slug}",
-            "rationale": (
-                f"{company} is a major PET packaging buyer. "
-                f"Reaching out to {fn} in {title} can unlock new resin supply contracts."
-            ),
+            "linkedin": f"linkedin.com/in/{fn.lower()}-{ln.lower()}-{slug[:20]}",
+            "industry": ind,
+            "rationale": _INDUSTRY_RATIONALE[ind].format(company=company) + f" Contact: {title}.",
         })
     return leads
 
@@ -485,7 +742,7 @@ def _run_daily_lead_generation():
                     lead.get("email", ""),
                     lead.get("phone", ""),
                     lead.get("linkedin", ""),
-                    "PET Plastic Manufacturing",
+                    lead.get("industry", "Beverage / PET Packaging"),
                     lead.get("rationale", ""),
                     "AI Generated",
                     "New",
@@ -551,9 +808,58 @@ class FeedbackCreate(BaseModel):
 
 class LeadGenerateRequest(BaseModel):
     count: Optional[int] = 5
+    industry_focus: Optional[str] = None  # Aerospace | Beverage / PET Packaging | PET Air Conveyors | Automotive Engineering
 
 class LeadStatusUpdate(BaseModel):
     status: str
+
+class InventoryCreate(BaseModel):
+    sku: str
+    name: str
+    description: Optional[str] = ""
+    material: Optional[str] = ""
+    unit_price_usd: Optional[float] = None
+    units_per_pack: Optional[int] = 2
+    stock_qty: Optional[int] = 0
+    category: Optional[str] = "Flow Control / Distribution"
+    manufacturer: Optional[str] = "PTC Inc"
+    distributor: Optional[str] = "Industrial and Molecular Solutions"
+    notes: Optional[str] = ""
+
+class InventoryUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    material: Optional[str] = None
+    unit_price_usd: Optional[float] = None
+    units_per_pack: Optional[int] = None
+    stock_qty: Optional[int] = None
+    category: Optional[str] = None
+    manufacturer: Optional[str] = None
+    distributor: Optional[str] = None
+    notes: Optional[str] = None
+
+class NdaCreate(BaseModel):
+    contact_id: Optional[str] = None
+    lead_id: Optional[str] = None
+    document_ref: Optional[str] = "deliverables/NDA_TEMPLATE.md"
+
+class NdaStatusUpdate(BaseModel):
+    status: str  # pending | signed | declined
+
+class OpportunityCreate(BaseModel):
+    company: str
+    contact_name: Optional[str] = ""
+    industry: Optional[str] = ""
+    recommended_sku: Optional[str] = ""
+    estimated_quantity: Optional[int] = 1
+    unit_price_usd: Optional[float] = None
+    stage: Optional[str] = "Prospecting"
+    next_step: Optional[str] = ""
+    value_proposition: Optional[str] = ""
+    lead_id: Optional[str] = None
+    contact_id: Optional[str] = None
+    nda_required: Optional[bool] = True
+    nda_status: Optional[str] = "Pending"
 
 class AgentRunRequest(BaseModel):
     task: str
@@ -590,9 +896,9 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(
-    title="PET Manufacturing Closing Agent",
-    description="AI-powered sales agent for the PET plastic manufacturing industry",
-    version="1.0.0",
+    title="Closing Agent Manufacturing — LC-Flow",
+    description="AI-powered sales agent for LC-Flow Valve / industrial manufacturing (NDA-gated)",
+    version="1.1.0",
     lifespan=lifespan,
 )
 
@@ -927,11 +1233,12 @@ def generate_leads(body: LeadGenerateRequest):
     count = max(1, min(body.count or 5, 20))
     saved = 0
     leads_out = []
-    generated = _generate_leads_ai(count=count)
+    generated = _generate_leads_ai(count=count, industry_focus=body.industry_focus)
     now = datetime.utcnow().isoformat()
     with get_db() as conn:
         for lead in generated:
             lid = str(uuid.uuid4())
+            industry = lead.get("industry") or body.industry_focus or "Beverage / PET Packaging"
             conn.execute(
                 """INSERT INTO leads
                    (id, name, title, company, email, phone, linkedin,
@@ -945,14 +1252,14 @@ def generate_leads(body: LeadGenerateRequest):
                     lead.get("email", ""),
                     lead.get("phone", ""),
                     lead.get("linkedin", ""),
-                    "PET Plastic Manufacturing",
+                    industry,
                     lead.get("rationale", ""),
                     "AI Generated",
                     "New",
                     now,
                 ),
             )
-            leads_out.append({**lead, "id": lid, "status": "New", "created_at": now})
+            leads_out.append({**lead, "id": lid, "industry": industry, "status": "New", "created_at": now})
             saved += 1
     return {"generated": saved, "leads": leads_out}
 
@@ -1006,7 +1313,7 @@ def convert_lead_to_contact(lead_id: str):
             (
                 cid, lead["name"], lead["title"], lead["company"],
                 lead["email"], lead["phone"], lead["linkedin"],
-                "PET Plastic Manufacturing", "Identified",
+                lead.get("industry") or "Beverage / PET Packaging", "Identified",
                 lead.get("rationale", ""), now, now,
             ),
         )
@@ -1106,24 +1413,47 @@ def run_agent(body: AgentRunRequest):
         return get_funnel()
 
     else:
-        # General AI assistant
+        # General AI assistant — always NDA-aware for LC-Flow
+        nda_ok = False
+        if contact:
+            nda_ok = _contact_nda_signed(contact_id=body.contact_id)
+        nda_rule = (
+            "CRITICAL NDA POLICY: Never share detailed LC-Flow specs, drawings, CAD, "
+            "material process details, or unit pricing until an NDA is signed for that "
+            "contact/lead. If NDA is not signed, offer to send the Mutual NDA first "
+            "(deliverables/NDA_TEMPLATE.md). High-level product category mentions are OK."
+        )
+        if contact and not nda_ok:
+            nda_rule += " Current contact NDA status: NOT SIGNED — gate all technical/pricing content."
+        elif contact and nda_ok:
+            nda_rule += " Current contact NDA status: SIGNED — technical discussion OK."
         system = (
-            "You are an intelligent B2B sales agent specialising in PET plastic "
-            "manufacturing. Help the user with their sales task concisely."
+            "You are an intelligent B2B sales agent for LC-Flow Valve and Distribution "
+            "Adaptor (PTC Inc / Industrial and Molecular Solutions), covering Aerospace, "
+            "Beverage/PET, PET Air Conveyors, and Automotive Engineering. "
+            + nda_rule +
+            " Help the user with their sales task concisely."
         )
         user_msg = body.task
         if contact:
-            user_msg += f"\nContact: {contact['name']}, {contact['title']} at {contact['company']}"
+            user_msg += f"\nContact: {contact['name']}, {contact.get('title','')} at {contact['company']}"
         if body.context:
             user_msg += f"\nContext: {body.context}"
         result = _ai_complete(system, user_msg)
         if not result:
-            result = (
-                "I can help you with: generating outreach emails, scheduling meetings, "
-                "processing orders, and responding to customer feedback. "
-                "Please specify a contact and task."
-            )
-        return {"action": "agent_response", "response": result}
+            if contact and not nda_ok:
+                result = (
+                    f"NDA is not yet signed for {contact['name']} at {contact['company']}. "
+                    "I can draft an NDA-first outreach or create a pending NDA via POST /ndas. "
+                    "I will not share detailed specs or pricing until the NDA is marked signed."
+                )
+            else:
+                result = (
+                    "I can help you with: NDA-gated outreach emails, meetings, inventory, "
+                    "orders, and feedback. Please specify a contact and task."
+                )
+        return {"action": "agent_response", "response": result, "nda_signed": nda_ok}
+
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1199,6 +1529,203 @@ def reject_item(comm_type: str, item_id: str):
     return {"message": "Rejected", "id": item_id, "comm_type": comm_type}
 
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Routes – Inventory (LC-Flow SKUs)
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.get("/inventory")
+def list_inventory():
+    with get_db() as conn:
+        rows = conn.execute("SELECT * FROM inventory ORDER BY sku").fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.post("/inventory", status_code=201)
+def create_inventory(body: InventoryCreate):
+    now = datetime.utcnow().isoformat()
+    iid = str(uuid.uuid4())
+    with get_db() as conn:
+        existing = conn.execute("SELECT id FROM inventory WHERE sku=?", (body.sku,)).fetchone()
+        if existing:
+            raise HTTPException(status_code=409, detail=f"SKU {body.sku} already exists")
+        conn.execute(
+            """INSERT INTO inventory
+               (id, sku, name, description, material, unit_price_usd, units_per_pack,
+                stock_qty, category, manufacturer, distributor, notes, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                iid, body.sku, body.name, body.description, body.material,
+                body.unit_price_usd, body.units_per_pack, body.stock_qty,
+                body.category, body.manufacturer, body.distributor, body.notes, now,
+            ),
+        )
+    return {"id": iid, "sku": body.sku, "message": "Inventory item created"}
+
+
+@app.get("/inventory/{sku}")
+def get_inventory(sku: str):
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM inventory WHERE sku=?", (sku,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="SKU not found")
+    return dict(row)
+
+
+@app.put("/inventory/{sku}")
+def update_inventory(sku: str, body: InventoryUpdate):
+    fields = body.dict(exclude_unset=True)
+    if not fields:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    sets = ", ".join(f"{k}=?" for k in fields)
+    vals = list(fields.values()) + [sku]
+    with get_db() as conn:
+        result = conn.execute(f"UPDATE inventory SET {sets} WHERE sku=?", vals)
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail="SKU not found")
+        row = conn.execute("SELECT * FROM inventory WHERE sku=?", (sku,)).fetchone()
+    return dict(row)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Routes – NDAs (required for all LC-Flow sales discussions)
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.get("/ndas")
+def list_ndas(status: Optional[str] = None, contact_id: Optional[str] = None):
+    with get_db() as conn:
+        query = "SELECT * FROM ndas WHERE 1=1"
+        params: list = []
+        if status:
+            query += " AND status=?"
+            params.append(status)
+        if contact_id:
+            query += " AND contact_id=?"
+            params.append(contact_id)
+        query += " ORDER BY created_at DESC"
+        rows = conn.execute(query, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.post("/ndas", status_code=201)
+def create_nda(body: NdaCreate):
+    if not body.contact_id and not body.lead_id:
+        raise HTTPException(status_code=400, detail="contact_id or lead_id required")
+    now = datetime.utcnow().isoformat()
+    nid = str(uuid.uuid4())
+    with get_db() as conn:
+        if body.contact_id:
+            row = conn.execute("SELECT id FROM contacts WHERE id=?", (body.contact_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Contact not found")
+        if body.lead_id:
+            row = conn.execute("SELECT id FROM leads WHERE id=?", (body.lead_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Lead not found")
+        conn.execute(
+            """INSERT INTO ndas (id, contact_id, lead_id, status, signed_at, document_ref, created_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            (nid, body.contact_id, body.lead_id, "pending", None, body.document_ref, now),
+        )
+    return {
+        "id": nid,
+        "status": "pending",
+        "document_ref": body.document_ref,
+        "message": "NDA record created — send Mutual NDA before technical specs/pricing",
+    }
+
+
+@app.put("/ndas/{nda_id}/status")
+def update_nda_status(nda_id: str, body: NdaStatusUpdate):
+    allowed = ["pending", "signed", "declined"]
+    if body.status not in allowed:
+        raise HTTPException(status_code=400, detail=f"Invalid status. Choose from: {allowed}")
+    now = datetime.utcnow().isoformat()
+    signed_at = now if body.status == "signed" else None
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM ndas WHERE id=?", (nda_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="NDA not found")
+        conn.execute(
+            "UPDATE ndas SET status=?, signed_at=? WHERE id=?",
+            (body.status, signed_at, nda_id),
+        )
+        if body.status == "signed" and row["contact_id"]:
+            try:
+                conn.execute(
+                    "UPDATE contacts SET nda_signed=1, updated_at=? WHERE id=?",
+                    (now, row["contact_id"]),
+                )
+            except Exception:
+                pass
+        if body.status == "declined" and row["contact_id"]:
+            try:
+                conn.execute(
+                    "UPDATE contacts SET nda_signed=0, updated_at=? WHERE id=?",
+                    (now, row["contact_id"]),
+                )
+            except Exception:
+                pass
+    return {"message": "NDA status updated", "status": body.status, "signed_at": signed_at}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Routes – Opportunities
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.get("/opportunities")
+def list_opportunities(stage: Optional[str] = None):
+    with get_db() as conn:
+        if stage:
+            rows = conn.execute(
+                "SELECT * FROM opportunities WHERE stage=? ORDER BY estimated_deal_value_usd DESC",
+                (stage,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM opportunities ORDER BY estimated_deal_value_usd DESC"
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.post("/opportunities", status_code=201)
+def create_opportunity(body: OpportunityCreate):
+    now = datetime.utcnow().isoformat()
+    oid = str(uuid.uuid4())
+    unit = body.unit_price_usd
+    if unit is None and body.recommended_sku:
+        with get_db() as conn:
+            inv = conn.execute(
+                "SELECT unit_price_usd FROM inventory WHERE sku=?", (body.recommended_sku,)
+            ).fetchone()
+        if inv:
+            unit = inv["unit_price_usd"]
+    unit = unit or 0.0
+    qty = body.estimated_quantity or 1
+    deal = round(unit * qty, 2)
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO opportunities
+               (id, company, contact_name, industry, recommended_sku, estimated_quantity,
+                unit_price_usd, estimated_deal_value_usd, stage, next_step, value_proposition,
+                nda_required, nda_status, lead_id, contact_id, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                oid, body.company, body.contact_name, body.industry, body.recommended_sku,
+                qty, unit, deal, body.stage, body.next_step, body.value_proposition,
+                1 if body.nda_required else 0, body.nda_status or "Pending",
+                body.lead_id, body.contact_id, now,
+            ),
+        )
+    return {
+        "id": oid,
+        "estimated_deal_value_usd": deal,
+        "nda_required": True,
+        "nda_status": body.nda_status or "Pending",
+        "message": "Opportunity created — NDA required before technical/pricing deep-dive",
+    }
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+    return {"status": "ok", "timestamp": datetime.utcnow().isoformat(), "product": "LC-Flow Valve"}

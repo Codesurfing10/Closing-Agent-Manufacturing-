@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>PET Manufacturing Closing Agent</title>
+  <title>Closing Agent — LC-Flow Manufacturing</title>
   <link rel="stylesheet" href="style.css" />
   <!-- Feather icons (lightweight SVG icons) -->
   <script src="https://unpkg.com/feather-icons@4.29.0/dist/feather.min.js"></script>
@@ -13,7 +13,7 @@
   <aside class="sidebar">
     <div class="sidebar-brand">
       <span class="brand-icon">⚗️</span>
-      <span class="brand-text">PET Agent</span>
+      <span class="brand-text">LC-Flow Agent</span>
     </div>
     <nav class="sidebar-nav">
       <a href="#" class="nav-item active" data-view="dashboard">
@@ -36,6 +36,9 @@
       </a>
       <a href="#" class="nav-item" data-view="leads">
         <i data-feather="target"></i> Leads
+      </a>
+      <a href="#" class="nav-item" data-view="inventory">
+        <i data-feather="box"></i> Inventory
       </a>
       <a href="#" class="nav-item" data-view="agent">
         <i data-feather="cpu"></i> AI Agent
@@ -61,7 +64,7 @@
     <section id="view-dashboard" class="view active">
       <header class="view-header">
         <h1>Dashboard</h1>
-        <span class="subtitle">PET Plastic Manufacturing Sales Pipeline</span>
+        <span class="subtitle">LC-Flow Valve Sales Pipeline (NDA-gated)</span>
       </header>
 
       <div class="stats-grid" id="stats-grid">
@@ -204,6 +207,27 @@
           </thead>
           <tbody id="leads-tbody"></tbody>
         </table>
+      </div>
+    </section>
+
+
+    <!-- ── Inventory view ── -->
+    <section id="view-inventory" class="view">
+      <header class="view-header">
+        <h1>Inventory</h1>
+        <span class="subtitle">LC-Flow Valve SKUs (NDA required before sharing pricing externally)</span>
+      </header>
+      <div class="card">
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>SKU</th><th>Name</th><th>Material</th><th>List USD</th><th>Units/Pack</th><th>Stock</th><th>Manufacturer</th>
+              </tr>
+            </thead>
+            <tbody id="inventory-tbody"></tbody>
+          </table>
+        </div>
       </div>
     </section>
 
