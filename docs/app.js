@@ -118,6 +118,7 @@ async function loadView(view) {
     case "orders": return loadOrders();
     case "feedback": return loadFeedback();
     case "leads": return loadLeads();
+    case "inventory": return loadInventory();
     case "agent": return loadAgent();
     case "approvals": return loadApprovals();
   }
@@ -949,6 +950,40 @@ window.addEventListener("DOMContentLoaded", () => {
   loadDashboard();
 });
 
+
+/* ── Inventory ───────────────────────────────────────────────── */
+let _inventory = [];
+
+async function loadInventory() {
+  try {
+    _inventory = await api("/inventory");
+    renderInventoryTable(_inventory);
+  } catch (e) {
+    showToast("Could not load inventory: " + e.message, "error");
+  }
+}
+
+function renderInventoryTable(items) {
+  const tbody = $("#inventory-tbody");
+  if (!tbody) return;
+  if (!items.length) {
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:32px">No inventory items. Seed runs on API startup.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = items.map((it) => `
+    <tr>
+      <td><strong>${fmt(it.sku)}</strong></td>
+      <td>${fmt(it.name)}</td>
+      <td>${fmt(it.material)}</td>
+      <td>${it.unit_price_usd != null ? fmtUSD(it.unit_price_usd) : "–"}</td>
+      <td>${fmt(it.units_per_pack)}</td>
+      <td>${fmt(it.stock_qty)}</td>
+      <td>${fmt(it.manufacturer)}</td>
+    </tr>
+  `).join("");
+}
+
+
 // Expose globals needed by inline onclick handlers
 Object.assign(window, {
   saveContactStage,
@@ -969,6 +1004,7 @@ Object.assign(window, {
   updateLeadStatus,
   deleteLead,
   submitGenerateLeads,
+  loadInventory,
   approveItem,
   rejectItem,
 });
