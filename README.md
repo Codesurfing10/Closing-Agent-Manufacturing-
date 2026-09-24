@@ -25,7 +25,7 @@ An AI-powered sales agent for the **LC-Flow Valve and Distribution Adaptor** (PT
 | | URL |
 |--|-----|
 | **UI** | `https://codesurfing10.github.io/Closing-Agent-Manufacturing-` |
-| **API** | `https://closing-agent-pet.onrender.com` |
+| **API** | `https://closing-agent-manufacturing.onrender.com` |
 
 > After merging this LC-Flow update, **redeploy the Render service** so `/health` reports `"product": "LC-Flow Valve"` and `/inventory` lists the three SKUs. The live API may 404 until redeployed.
 
@@ -128,7 +128,7 @@ Operator guide: [`deliverables/XOMETRY_HANDOFF.md`](deliverables/XOMETRY_HANDOFF
 2. Set source to **`main` branch / `docs` folder**.
 3. Open `docs/app.js` and update `API_BASE` to your Render URL:
    ```js
-   const API_BASE = "https://closing-agent-pet.onrender.com";
+   const API_BASE = "https://closing-agent-manufacturing.onrender.com";
    ```
 4. Push the change – GitHub Pages will redeploy automatically.
 
