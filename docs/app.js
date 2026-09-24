@@ -1,6 +1,6 @@
 /* ── Config ──────────────────────────────────────────────────── */
 // UPDATE this to your Render service URL after deployment
-const API_BASE = (window.API_BASE || "https://closing-agent-pet.onrender.com").replace(/\/$/, "");
+const API_BASE = (window.API_BASE || "https://closing-agent-manufacturing.onrender.com").replace(/\/$/, "");
 
 /* ── Utility helpers ─────────────────────────────────────────── */
 const $ = (sel, ctx = document) => ctx.querySelector(sel);
