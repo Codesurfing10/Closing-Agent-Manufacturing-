@@ -12,12 +12,14 @@ import uuid
 import sqlite3
 import logging
 from contextlib import asynccontextmanager, contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from xometry import (
@@ -93,6 +95,7 @@ def init_db():
                 approval_status TEXT NOT NULL DEFAULT 'approved',
                 sent_at TEXT,
                 created_at TEXT NOT NULL,
+                meeting_id TEXT,
                 FOREIGN KEY (contact_id) REFERENCES contacts(id)
             );
 
@@ -316,6 +319,7 @@ def _migrate_db():
         "ALTER TABLE feedback ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved'",
         "ALTER TABLE contacts ADD COLUMN nda_signed INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE orders ADD COLUMN po_number TEXT",
+        "ALTER TABLE emails ADD COLUMN meeting_id TEXT",
     ]
     with get_db() as conn:
         for sql in migration_sqls:
@@ -789,6 +793,192 @@ def _generate_meeting_agenda(contact: dict, context: str = "") -> str:
         "• Sample / pilot quantity and timeline\n"
         "• Agree on quote and next steps"
     )
+
+
+
+# Organizer defaults for calendar invites / meeting emails
+_ORGANIZER_NAME = "James Gallagher"
+_ORGANIZER_EMAIL = "Jgallagher10@gmail.com"
+_ORGANIZER_PHONE = "610-393-1102"
+_ORGANIZER_COMPANY = "Industrial and Molecular Solutions / PTC Inc"
+_ICS_TZ = ZoneInfo("America/Tijuana")
+
+
+def _parse_iso_dt(value: str) -> datetime:
+    """Parse ISO datetime; treat naive values as UTC."""
+    raw = (value or "").strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    dt = datetime.fromisoformat(raw)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _ics_escape(text: str) -> str:
+    return (
+        (text or "")
+        .replace("\\", "\\\\")
+        .replace(";", "\\;")
+        .replace(",", "\\,")
+        .replace("\r\n", "\\n")
+        .replace("\n", "\\n")
+        .replace("\r", "\\n")
+    )
+
+
+def _ics_fold(line: str) -> str:
+    """Fold ICS content lines to <=75 octets (RFC 5545)."""
+    if len(line.encode("utf-8")) <= 75:
+        return line
+    out = []
+    buf = ""
+    for ch in line:
+        candidate = buf + ch
+        if len(candidate.encode("utf-8")) > 75:
+            out.append(buf)
+            buf = " " + ch
+        else:
+            buf = candidate
+    if buf:
+        out.append(buf)
+    return "\r\n".join(out)
+
+
+def _fmt_ics_utc(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _fmt_pt_display(dt: datetime) -> str:
+    local = dt.astimezone(_ICS_TZ)
+    # Drop leading zero on hour for readability (e.g. 09 -> 9) while keeping AM/PM
+    return local.strftime("%A, %B %d, %Y at %I:%M %p PT").replace(" at 0", " at ")
+
+
+def _safe_ics_filename(title: str) -> str:
+    base = "".join(ch if ch.isalnum() or ch in ("-", "_", " ") else "_" for ch in (title or "meeting"))
+    base = "_".join(base.split())[:60] or "meeting"
+    return f"{base}.ics"
+
+
+def _build_ics(meeting: dict, contact: dict) -> str:
+    """Build RFC 5545 VCALENDAR/VEVENT (METHOD:REQUEST) for a meeting. Times in UTC (Z)."""
+    start = _parse_iso_dt(meeting["scheduled_at"])
+    duration = int(meeting.get("duration_mins") or 30)
+    end = start + timedelta(minutes=duration)
+    now = datetime.now(timezone.utc)
+    mid = meeting["id"]
+    summary = meeting.get("title") or "Meeting"
+    location = meeting.get("location") or ""
+    agenda = (meeting.get("agenda") or "").strip()
+
+    desc_parts = []
+    if agenda:
+        desc_parts.append("Agenda:\n" + agenda)
+    desc_parts.append(
+        f"Organizer: {_ORGANIZER_NAME}\n"
+        f"{_ORGANIZER_COMPANY}\n"
+        f"{_ORGANIZER_PHONE} | {_ORGANIZER_EMAIL}"
+    )
+    description = _ics_escape("\n\n".join(desc_parts))
+
+    lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//Closing Agent Manufacturing//EN",
+        "CALSCALE:GREGORIAN",
+        "METHOD:REQUEST",
+        "BEGIN:VEVENT",
+        f"UID:{mid}@closing-agent",
+        f"DTSTAMP:{_fmt_ics_utc(now)}",
+        f"DTSTART:{_fmt_ics_utc(start)}",
+        f"DTEND:{_fmt_ics_utc(end)}",
+        f"SUMMARY:{_ics_escape(summary)}",
+        f"LOCATION:{_ics_escape(location)}",
+        f"DESCRIPTION:{description}",
+        f"ORGANIZER;CN={_ics_escape(_ORGANIZER_NAME)}:mailto:{_ORGANIZER_EMAIL}",
+    ]
+    attendee_email = (contact or {}).get("email") or ""
+    if attendee_email:
+        cn = _ics_escape((contact or {}).get("name") or attendee_email)
+        lines.append(f"ATTENDEE;CN={cn};RSVP=TRUE:mailto:{attendee_email}")
+    lines.extend([
+        "STATUS:CONFIRMED",
+        "SEQUENCE:0",
+        "END:VEVENT",
+        "END:VCALENDAR",
+    ])
+    return "\r\n".join(_ics_fold(line) for line in lines) + "\r\n"
+
+
+def _generate_meeting_invite_email(meeting: dict, contact: dict, agenda: str) -> dict:
+    """NDA-aware invite email draft (template + optional AI). Never auto-sends."""
+    contact_id = contact.get("id")
+    nda_ok = _contact_nda_signed(contact_id=contact_id) if contact_id else bool(contact.get("nda_signed"))
+    first = (contact.get("name") or "there").split()[0]
+    start = _parse_iso_dt(meeting["scheduled_at"])
+    when_pt = _fmt_pt_display(start)
+    duration = int(meeting.get("duration_mins") or 30)
+    location = meeting.get("location") or "TBD"
+    title = meeting.get("title") or "Meeting"
+    agenda_text = (agenda or meeting.get("agenda") or "").strip()
+    company = contact.get("company") or "your company"
+
+    if not nda_ok:
+        subject = f"Meeting invite: {title} (discovery / NDA) — {company}"
+        body = (
+            f"Hi {first},\n\n"
+            f"I'd like to confirm our upcoming call:\n\n"
+            f"• When: {when_pt}\n"
+            f"• Duration: {duration} minutes\n"
+            f"• Location: {location}\n\n"
+            f"Proposed agenda:\n{agenda_text or '• Discovery discussion and Mutual NDA next steps'}\n\n"
+            f"IMPORTANT: An NDA is not yet on file for {company}. "
+            f"This discussion is limited to high-level discovery and Mutual NDA execution — "
+            f"we will not share technical specifications, drawings, or pricing until an NDA is signed.\n\n"
+            f"A calendar invite (.ics) is available from Closing Agent (Download .ics on the meeting) "
+            f"and can be opened in Outlook, Google Calendar, or Apple Calendar.\n\n"
+            f"Looking forward to connecting.\n\n"
+            f"Best regards,\n{_ORGANIZER_NAME}\n{_ORGANIZER_COMPANY}\n"
+            f"{_ORGANIZER_PHONE} | {_ORGANIZER_EMAIL}"
+        )
+        return {"subject": subject, "body": body, "nda_gate": "pending"}
+
+    subject = f"Meeting invite: {title} — {company}"
+    body = (
+        f"Hi {first},\n\n"
+        f"Confirming our upcoming meeting:\n\n"
+        f"• When: {when_pt}\n"
+        f"• Duration: {duration} minutes\n"
+        f"• Location: {location}\n\n"
+        f"Agenda:\n{agenda_text or '• Technical fit discussion and next steps'}\n\n"
+        f"A calendar invite (.ics) is available from Closing Agent (Download .ics on the meeting) "
+        f"and can be opened in Outlook, Google Calendar, or Apple Calendar.\n\n"
+        f"Looking forward to it.\n\n"
+        f"Best regards,\n{_ORGANIZER_NAME}\n{_ORGANIZER_COMPANY}\n"
+        f"{_ORGANIZER_PHONE} | {_ORGANIZER_EMAIL}"
+    )
+    system = (
+        "You are a B2B sales assistant for Industrial and Molecular Solutions / PTC Inc. "
+        "NDA IS signed. Rewrite the meeting invite email to be concise and professional "
+        "(<=180 words). Keep When/Duration/Location, agenda bullets, and the note that "
+        "a .ics calendar invite is available from Closing Agent. "
+        "Return ONLY JSON with keys 'subject' and 'body'."
+    )
+    user = (
+        f"Contact: {contact.get('name')} at {company}.\n"
+        f"Draft subject: {subject}\nDraft body:\n{body}\n"
+        "Return ONLY JSON with keys 'subject' and 'body'."
+    )
+    raw = _ai_complete(system, user)
+    try:
+        data = json.loads(raw)
+        if "subject" in data and "body" in data:
+            data["nda_gate"] = "signed"
+            return data
+    except Exception:
+        pass
+    return {"subject": subject, "body": body, "nda_gate": "signed"}
 
 
 # Industry-focused lead targets for LC-Flow Valve (flow / distribution adaptor)
@@ -1304,6 +1494,17 @@ def schedule_meeting(body: MeetingCreate):
     agenda = _generate_meeting_agenda(contact, body.context or "")
     now = datetime.utcnow().isoformat()
     mid = str(uuid.uuid4())
+    meeting = {
+        "id": mid,
+        "contact_id": body.contact_id,
+        "title": body.title,
+        "scheduled_at": body.scheduled_at,
+        "duration_mins": body.duration_mins or 30,
+        "location": body.location or "Video Call (Zoom)",
+        "agenda": agenda,
+    }
+    invite = _generate_meeting_invite_email(meeting, contact, agenda)
+    eid = str(uuid.uuid4())
     with get_db() as conn:
         conn.execute(
             """INSERT INTO meetings
@@ -1312,29 +1513,135 @@ def schedule_meeting(body: MeetingCreate):
             (mid, body.contact_id, body.title, body.scheduled_at,
              body.duration_mins, body.location, agenda, "Scheduled", "pending", now),
         )
+        conn.execute(
+            """INSERT INTO emails
+               (id, contact_id, subject, body, status, approval_status, created_at, meeting_id)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (eid, body.contact_id, invite["subject"], invite["body"], "Draft", "pending", now, mid),
+        )
         # Advance stage
         conn.execute(
             "UPDATE contacts SET stage='Meeting Scheduled', updated_at=? WHERE id=? AND stage IN ('Identified','Contacted')",
             (now, body.contact_id),
         )
-    return {"id": mid, "agenda": agenda, "status": "Scheduled", "approval_status": "pending"}
+    return {
+        "id": mid,
+        "agenda": agenda,
+        "status": "Scheduled",
+        "approval_status": "pending",
+        "email_id": eid,
+        "ics_url": f"/meetings/{mid}/ics",
+        "invite_subject": invite["subject"],
+        "nda_gate": invite.get("nda_gate"),
+    }
 
 
 @app.get("/meetings")
 def list_meetings(contact_id: Optional[str] = None):
+    invite_join = (
+        "LEFT JOIN emails e ON e.meeting_id = m.id "
+    )
+    select_cols = (
+        "SELECT m.*, c.name as contact_name, c.company, "
+        "e.id as invite_email_id, e.approval_status as invite_approval_status, "
+        "e.status as invite_email_status, e.subject as invite_subject "
+    )
     with get_db() as conn:
         if contact_id:
             rows = conn.execute(
-                "SELECT m.*, c.name as contact_name, c.company FROM meetings m "
-                "JOIN contacts c ON m.contact_id=c.id WHERE m.contact_id=? ORDER BY m.scheduled_at",
+                select_cols
+                + "FROM meetings m "
+                "JOIN contacts c ON m.contact_id=c.id "
+                + invite_join
+                + "WHERE m.contact_id=? ORDER BY m.scheduled_at",
                 (contact_id,),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT m.*, c.name as contact_name, c.company FROM meetings m "
-                "JOIN contacts c ON m.contact_id=c.id ORDER BY m.scheduled_at"
+                select_cols
+                + "FROM meetings m "
+                "JOIN contacts c ON m.contact_id=c.id "
+                + invite_join
+                + "ORDER BY m.scheduled_at"
             ).fetchall()
-    return [dict(r) for r in rows]
+    results = []
+    for r in rows:
+        d = dict(r)
+        d["ics_url"] = f"/meetings/{d['id']}/ics"
+        results.append(d)
+    return results
+
+
+@app.get("/meetings/{meeting_id}/ics")
+def download_meeting_ics(meeting_id: str):
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT m.*, c.name as contact_name, c.email as contact_email, c.company "
+            "FROM meetings m JOIN contacts c ON m.contact_id=c.id WHERE m.id=?",
+            (meeting_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    meeting = dict(row)
+    contact = {
+        "id": meeting["contact_id"],
+        "name": meeting.get("contact_name") or "",
+        "email": meeting.get("contact_email") or "",
+        "company": meeting.get("company") or "",
+    }
+    ics = _build_ics(meeting, contact)
+    filename = _safe_ics_filename(meeting.get("title") or "meeting")
+    return Response(
+        content=ics,
+        media_type="text/calendar; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )
+
+
+@app.get("/meetings/{meeting_id}/invite")
+def get_meeting_invite(meeting_id: str):
+    """Return ICS text plus linked invite email fields (if any)."""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT m.*, c.name as contact_name, c.email as contact_email, c.company "
+            "FROM meetings m JOIN contacts c ON m.contact_id=c.id WHERE m.id=?",
+            (meeting_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Meeting not found")
+        meeting = dict(row)
+        email_row = conn.execute(
+            "SELECT * FROM emails WHERE meeting_id=? ORDER BY created_at DESC LIMIT 1",
+            (meeting_id,),
+        ).fetchone()
+    contact = {
+        "id": meeting["contact_id"],
+        "name": meeting.get("contact_name") or "",
+        "email": meeting.get("contact_email") or "",
+        "company": meeting.get("company") or "",
+    }
+    ics = _build_ics(meeting, contact)
+    payload = {
+        "meeting_id": meeting_id,
+        "ics": ics,
+        "ics_url": f"/meetings/{meeting_id}/ics",
+        "filename": _safe_ics_filename(meeting.get("title") or "meeting"),
+        "suggested_to": contact.get("email") or "",
+        "suggested_subject": None,
+        "suggested_body": None,
+        "email_id": None,
+        "approval_status": None,
+    }
+    if email_row:
+        er = dict(email_row)
+        payload["email_id"] = er["id"]
+        payload["suggested_subject"] = er["subject"]
+        payload["suggested_body"] = er["body"]
+        payload["approval_status"] = er["approval_status"]
+        payload["email_status"] = er["status"]
+    return payload
 
 
 @app.put("/meetings/{meeting_id}")
