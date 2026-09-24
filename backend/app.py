@@ -196,12 +196,31 @@ def init_db():
                 created_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS distributor_listings (
+                id TEXT PRIMARY KEY,
+                channel TEXT NOT NULL UNIQUE,
+                path_type TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'not_started',
+                portal_url TEXT,
+                priority TEXT NOT NULL DEFAULT 'P3',
+                skus TEXT,
+                notes TEXT,
+                next_action TEXT,
+                next_action_date TEXT,
+                applied_at TEXT,
+                listed_at TEXT,
+                contact_email TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
         """)
     _migrate_db()
     with get_db() as conn:
         ensure_mfg_schema(conn)
     _seed_contacts()
     _seed_inventory()
+    _seed_distributor_listings()
 
 
 # Pre-populated contacts for PET manufacturing targets
@@ -371,6 +390,170 @@ def _seed_inventory():
                     item["unit_price_usd"], item["units_per_pack"], item["stock_qty"],
                     item["category"], item["manufacturer"], item["distributor"],
                     item["notes"], now,
+                ),
+            )
+
+
+
+_LC_FLOW_SKUS = "LCP061000,LCSS61000,LCA061000"
+
+_SEED_DISTRIBUTOR_LISTINGS = [
+    {
+        "channel": "Thomasnet",
+        "path_type": "open_apply",
+        "status": "not_started",
+        "portal_url": "https://business.thomasnet.com/get-listed-on-thomasnet?nav_src=utilitynav",
+        "priority": "P1",
+        "skus": _LC_FLOW_SKUS,
+        "notes": "Claim/list company (free) + categories; discovery leads into Closing-Agent.",
+        "next_action": "Claim Thomasnet profile; set pneumatics / valve categories; upload public one-pager.",
+        "next_action_date": None,
+        "contact_email": None,
+    },
+    {
+        "channel": "GlobalSpec",
+        "path_type": "open_apply",
+        "status": "not_started",
+        "portal_url": "https://advertising.globalspec.com/list-your-products/",
+        "priority": "P1",
+        "skus": _LC_FLOW_SKUS,
+        "notes": "Paid Product Discovery; engineer RFQs. Contact sales for pricing.",
+        "next_action": "Inquire Product Discovery pricing; prepare public-safe product specs.",
+        "next_action_date": None,
+        "contact_email": "sales@globalspec.com",
+    },
+    {
+        "channel": "MSC",
+        "path_type": "open_apply",
+        "status": "not_started",
+        "portal_url": "https://www.mscdirect.com/customer-service/new-supplier-inquiry",
+        "priority": "P2",
+        "skus": _LC_FLOW_SKUS,
+        "notes": "New Supplier Inquiry draft in deliverables/MSC_SUPPLIER_APPLICATION_DRAFT.md. DRAFT only.",
+        "next_action": "James reviews MSC draft; gather W-9/COI/photos/GTIN; submit inquiry when ready.",
+        "next_action_date": None,
+        "contact_email": None,
+    },
+    {
+        "channel": "Zoro",
+        "path_type": "open_apply",
+        "status": "not_started",
+        "portal_url": "https://www.zoro.com/sell/",
+        "priority": "P2",
+        "skus": _LC_FLOW_SKUS,
+        "notes": "Sell on Zoro partnership draft in deliverables/ZORO_SELL_ON_ZORO_APPLICATION_DRAFT.md. Prefer dropship if 1–2 day ship.",
+        "next_action": "James reviews Zoro draft; confirm dropship SLA + seller of record; apply when ready.",
+        "next_action_date": None,
+        "contact_email": "businessdevelopment@zoro.com",
+    },
+    {
+        "channel": "Amazon Business",
+        "path_type": "marketplace",
+        "status": "not_started",
+        "portal_url": "https://sell.amazon.com/programs/amazon-business",
+        "priority": "P2",
+        "skus": _LC_FLOW_SKUS,
+        "notes": "Fastest electronic listing path; needs GTIN or Brand Registry path. Public vs NDA policy open.",
+        "next_action": "Decide public-vs-NDA policy; obtain GTINs; open Professional seller + B2B tools.",
+        "next_action_date": None,
+        "contact_email": None,
+    },
+    {
+        "channel": "Fastenal",
+        "path_type": "portal_review",
+        "status": "not_started",
+        "portal_url": "https://www.fastenal.com",
+        "priority": "P3",
+        "skus": _LC_FLOW_SKUS,
+        "notes": "Register as Fastenal Supplier; local branch code helps. Guide: crafter.fastenal.com PDF.",
+        "next_action": "Register supplier account; identify local branch champion; email suppliercompliance if needed.",
+        "next_action_date": None,
+        "contact_email": "suppliercompliance@fastenal.com",
+    },
+    {
+        "channel": "Motion",
+        "path_type": "portal_review",
+        "status": "not_started",
+        "portal_url": "https://www.motionpartnerportal.com/Supplier-Process/",
+        "priority": "P3",
+        "skus": _LC_FLOW_SKUS,
+        "notes": "Request New Supplier Registration Form via Partner Portal; optional branch program.",
+        "next_action": "Request New Supplier form; prepare capability one-pager + UNSPSC.",
+        "next_action_date": None,
+        "contact_email": "partnerportal@motion.com",
+    },
+    {
+        "channel": "Applied",
+        "path_type": "portal_review",
+        "status": "not_started",
+        "portal_url": "https://www.applied.com/supplier-diversity",
+        "priority": "P3",
+        "skus": _LC_FLOW_SKUS,
+        "notes": "Supplier diversity / become-a-supplier path; local service centers for intros.",
+        "next_action": "Register/apply via Applied supplier diversity page; review Supplier Code of Conduct.",
+        "next_action_date": None,
+        "contact_email": None,
+    },
+    {
+        "channel": "Grainger",
+        "path_type": "portal_review",
+        "status": "not_started",
+        "portal_url": "https://solutions.sciquest.com/apps/Router/SupplierLogin?CustOrg=WWGrainger",
+        "priority": "P4",
+        "skus": _LC_FLOW_SKUS,
+        "notes": "JAGGAER Supplier Network + vendor contact request; slow category gate. No self-serve SKU upload.",
+        "next_action": "Create JAGGAER profile; submit supplier/vendor contact request; prepare UNSPSC/NAICS one-pager.",
+        "next_action_date": None,
+        "contact_email": "Supplier_Maintenance@Grainger.com",
+    },
+    {
+        "channel": "McMaster",
+        "path_type": "closed_bd",
+        "status": "not_started",
+        "portal_url": "https://www.mcmaster.com/contact",
+        "priority": "P5",
+        "skus": _LC_FLOW_SKUS,
+        "notes": "No public supplier apply URL. Relationship/BD or end-customer pull only. Do not fabricate an apply link.",
+        "next_action": "Hold cold apply; pursue warm intro or customer pull-through to Supplier Operations.",
+        "next_action_date": None,
+        "contact_email": "sales@mcmaster.com",
+    },
+]
+
+
+def _seed_distributor_listings():
+    """Idempotent seed of priority distributor channels by channel name."""
+    now = datetime.utcnow().isoformat()
+    with get_db() as conn:
+        for item in _SEED_DISTRIBUTOR_LISTINGS:
+            existing = conn.execute(
+                "SELECT id FROM distributor_listings WHERE channel=?",
+                (item["channel"],),
+            ).fetchone()
+            if existing:
+                continue
+            conn.execute(
+                """INSERT INTO distributor_listings
+                   (id, channel, path_type, status, portal_url, priority, skus,
+                    notes, next_action, next_action_date, applied_at, listed_at,
+                    contact_email, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    str(uuid.uuid4()),
+                    item["channel"],
+                    item["path_type"],
+                    item["status"],
+                    item["portal_url"],
+                    item["priority"],
+                    item["skus"],
+                    item["notes"],
+                    item["next_action"],
+                    item.get("next_action_date"),
+                    None,
+                    None,
+                    item.get("contact_email"),
+                    now,
+                    now,
                 ),
             )
 
@@ -884,6 +1067,41 @@ class OpportunityCreate(BaseModel):
     nda_required: Optional[bool] = True
     nda_status: Optional[str] = "Pending"
 
+
+_DISTRIBUTOR_STATUSES = [
+    "not_started", "applied", "in_review", "approved", "rejected", "listed", "on_hold",
+]
+_DISTRIBUTOR_PATH_TYPES = ["open_apply", "portal_review", "closed_bd", "marketplace"]
+
+class DistributorListingCreate(BaseModel):
+    channel: str
+    path_type: str = "open_apply"
+    status: Optional[str] = "not_started"
+    portal_url: Optional[str] = None
+    priority: Optional[str] = "P3"
+    skus: Optional[str] = _LC_FLOW_SKUS
+    notes: Optional[str] = ""
+    next_action: Optional[str] = ""
+    next_action_date: Optional[str] = None
+    contact_email: Optional[str] = None
+
+class DistributorListingUpdate(BaseModel):
+    channel: Optional[str] = None
+    path_type: Optional[str] = None
+    status: Optional[str] = None
+    portal_url: Optional[str] = None
+    priority: Optional[str] = None
+    skus: Optional[str] = None
+    notes: Optional[str] = None
+    next_action: Optional[str] = None
+    next_action_date: Optional[str] = None
+    applied_at: Optional[str] = None
+    listed_at: Optional[str] = None
+    contact_email: Optional[str] = None
+
+class DistributorListingStatusUpdate(BaseModel):
+    status: str  # not_started | applied | in_review | approved | rejected | listed | on_hold
+
 class AgentRunRequest(BaseModel):
     task: str
     contact_id: Optional[str] = None
@@ -921,7 +1139,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(
     title="Closing Agent Manufacturing — LC-Flow",
     description="AI-powered sales agent for LC-Flow Valve / industrial manufacturing (NDA-gated)",
-    version="1.2.0",
+    version="1.3.0",
     lifespan=lifespan,
 )
 
@@ -1571,7 +1789,8 @@ def run_agent(body: AgentRunRequest):
             else:
                 result = (
                     "I can help you with: NDA-gated outreach emails, meetings, inventory, "
-                    "orders, and feedback. Please specify a contact and task."
+                    "orders, feedback, and distributor listing tracking "
+                    "(/distributor-listings). Please specify a contact and task."
                 )
         return {"action": "agent_response", "response": result, "nda_signed": nda_ok}
 
@@ -1847,12 +2066,147 @@ def create_opportunity(body: OpportunityCreate):
     }
 
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Routes – Distributor listings (MSC / Zoro / catalogs tracker)
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.get("/distributor-listings")
+def list_distributor_listings(status: Optional[str] = None, channel: Optional[str] = None):
+    with get_db() as conn:
+        query = "SELECT * FROM distributor_listings WHERE 1=1"
+        params: list = []
+        if status:
+            query += " AND status=?"
+            params.append(status)
+        if channel:
+            query += " AND channel=?"
+            params.append(channel)
+        query += " ORDER BY priority ASC, channel ASC"
+        rows = conn.execute(query, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.post("/distributor-listings", status_code=201)
+def create_distributor_listing(body: DistributorListingCreate):
+    if body.path_type not in _DISTRIBUTOR_PATH_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid path_type. Choose from: {_DISTRIBUTOR_PATH_TYPES}",
+        )
+    status = body.status or "not_started"
+    if status not in _DISTRIBUTOR_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid status. Choose from: {_DISTRIBUTOR_STATUSES}",
+        )
+    now = datetime.utcnow().isoformat()
+    lid = str(uuid.uuid4())
+    with get_db() as conn:
+        existing = conn.execute(
+            "SELECT id FROM distributor_listings WHERE channel=?", (body.channel,)
+        ).fetchone()
+        if existing:
+            raise HTTPException(status_code=409, detail=f"Channel {body.channel} already exists")
+        conn.execute(
+            """INSERT INTO distributor_listings
+               (id, channel, path_type, status, portal_url, priority, skus,
+                notes, next_action, next_action_date, applied_at, listed_at,
+                contact_email, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                lid, body.channel, body.path_type, status, body.portal_url,
+                body.priority or "P3", body.skus, body.notes, body.next_action,
+                body.next_action_date, None, None, body.contact_email, now, now,
+            ),
+        )
+    return {"id": lid, "channel": body.channel, "status": status, "message": "Distributor listing created"}
+
+
+@app.get("/distributor-listings/{listing_id}")
+def get_distributor_listing(listing_id: str):
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM distributor_listings WHERE id=?", (listing_id,)
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Distributor listing not found")
+    return dict(row)
+
+
+@app.put("/distributor-listings/{listing_id}")
+def update_distributor_listing(listing_id: str, body: DistributorListingUpdate):
+    fields = body.dict(exclude_unset=True)
+    if not fields:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    if "path_type" in fields and fields["path_type"] not in _DISTRIBUTOR_PATH_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid path_type. Choose from: {_DISTRIBUTOR_PATH_TYPES}",
+        )
+    if "status" in fields and fields["status"] not in _DISTRIBUTOR_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid status. Choose from: {_DISTRIBUTOR_STATUSES}",
+        )
+    now = datetime.utcnow().isoformat()
+    fields["updated_at"] = now
+    if fields.get("status") == "applied" and "applied_at" not in fields:
+        fields["applied_at"] = now
+    if fields.get("status") == "listed" and "listed_at" not in fields:
+        fields["listed_at"] = now
+    sets = ", ".join(f"{k}=?" for k in fields)
+    vals = list(fields.values()) + [listing_id]
+    with get_db() as conn:
+        result = conn.execute(
+            f"UPDATE distributor_listings SET {sets} WHERE id=?", vals
+        )
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Distributor listing not found")
+        row = conn.execute(
+            "SELECT * FROM distributor_listings WHERE id=?", (listing_id,)
+        ).fetchone()
+    return dict(row)
+
+
+@app.put("/distributor-listings/{listing_id}/status")
+def update_distributor_listing_status(listing_id: str, body: DistributorListingStatusUpdate):
+    if body.status not in _DISTRIBUTOR_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid status. Choose from: {_DISTRIBUTOR_STATUSES}",
+        )
+    now = datetime.utcnow().isoformat()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM distributor_listings WHERE id=?", (listing_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Distributor listing not found")
+        applied_at = row["applied_at"]
+        listed_at = row["listed_at"]
+        if body.status == "applied" and not applied_at:
+            applied_at = now
+        if body.status == "listed" and not listed_at:
+            listed_at = now
+        conn.execute(
+            """UPDATE distributor_listings
+               SET status=?, applied_at=?, listed_at=?, updated_at=? WHERE id=?""",
+            (body.status, applied_at, listed_at, now, listing_id),
+        )
+        updated = conn.execute(
+            "SELECT * FROM distributor_listings WHERE id=?", (listing_id,)
+        ).fetchone()
+    return dict(updated)
+
+
 @app.get("/health")
 def health():
     payload = {
         "status": "ok",
         "timestamp": datetime.utcnow().isoformat(),
         "product": "LC-Flow Valve",
+        "distributor_listings": True,
     }
     payload.update(xometry_config_summary())
     return payload
