@@ -388,6 +388,45 @@ async function sendEmail(id) {
 $("#btn-generate-email").addEventListener("click", () => _openGenerateEmailModal(null));
 
 /* ── Meetings ─────────────────────────────────────────────────── */
+function inviteStatusHtml(m) {
+  if (!m.invite_email_id) return "";
+  if (m.invite_approval_status === "pending") {
+    return `<span style="color:var(--warn);font-size:12px"><i data-feather="clock"></i> Invite email pending approval</span>`;
+  }
+  if (m.invite_approval_status === "approved" && m.invite_email_status === "Draft") {
+    return `<span style="color:var(--accent2);font-size:12px"><i data-feather="check"></i> Invite approved — Mark Sent in Emails</span>`;
+  }
+  if (m.invite_email_status === "Sent") {
+    return `<span style="color:var(--success,#22c55e);font-size:12px"><i data-feather="check-circle"></i> Invite marked sent</span>`;
+  }
+  if (m.invite_approval_status === "rejected") {
+    return `<span style="color:var(--danger);font-size:12px"><i data-feather="x-circle"></i> Invite rejected</span>`;
+  }
+  return "";
+}
+
+async function downloadMeetingIcs(id) {
+  try {
+    const res = await fetch(API_BASE + `/meetings/${id}/ics`);
+    if (!res.ok) throw new Error((await res.text()) || res.statusText);
+    const blob = await res.blob();
+    const cd = res.headers.get("Content-Disposition") || "";
+    const match = /filename="([^"]+)"/i.exec(cd);
+    const filename = match ? match[1] : "meeting.ics";
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    showToast("Calendar invite downloaded");
+  } catch (e) {
+    showToast("Could not download .ics: " + e.message, "error");
+  }
+}
+
 async function loadMeetings() {
   try {
     const meetings = await api("/meetings");
@@ -405,11 +444,16 @@ async function loadMeetings() {
               <div class="list-card-title">${m.title}</div>
               <div class="list-card-meta">${m.contact_name} (${m.company}) · ${fmtDate(m.scheduled_at)} · ${m.duration_mins} min · ${m.location}</div>
             </div>
-            ${statusPill(m.status)}
+            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end">
+              ${m.invite_email_id ? approvalPill(m.invite_approval_status) : ""}
+              ${statusPill(m.status)}
+            </div>
           </div>
           <div class="list-card-body" style="white-space:pre-wrap">${m.agenda || ""}</div>
-          <div class="list-card-actions">
+          <div class="list-card-actions" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <button class="btn btn-sm btn-primary" onclick="downloadMeetingIcs('${m.id}')"><i data-feather="download"></i> Download .ics</button>
             <button class="btn btn-sm btn-secondary" onclick="completeMeeting('${m.id}')">Mark Completed</button>
+            ${inviteStatusHtml(m)}
           </div>
         </div>`
       )
@@ -468,7 +512,7 @@ async function submitScheduleMeeting() {
       context: $("#sm-context").value.trim(),
     });
     closeModal();
-    showToast("Meeting scheduled");
+    showToast("Meeting scheduled — invite draft sent to Approvals");
     navigate("meetings");
   } catch (e) {
     showToast("Error: " + e.message, "error");
