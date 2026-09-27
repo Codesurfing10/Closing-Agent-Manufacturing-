@@ -156,3 +156,9 @@ See `deliverables/DISTRIBUTOR_LISTING_TRACKER.md`.
 ---
 
 **Again: DRAFT only. Apply only via the official Zoro URL after James reviews. Do not invent GTINs, approvals, or EDI readiness claims beyond CSV export capability.**
+
+---
+
+## Phase 4 gate
+
+See `campaigns/zoro-submission-packet.md` and app campaign label **`campaign:zoro`**. Approve in UI, then apply at zoro.com/sell manually. **Mark submitted** only after.

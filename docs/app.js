@@ -125,6 +125,7 @@ async function loadView(view) {
     case "inventory": return loadInventory();
     case "catalog": return loadCatalogMonitor();
     case "agent": return loadAgent();
+    case "campaigns": return loadCampaigns();
     case "approvals": return loadApprovals();
   }
 }
@@ -144,6 +145,10 @@ async function loadDashboard() {
       $("#stat-pending-approvals").textContent = pa;
       updateApprovalsBadge(pa);
     }
+    // Refresh campaigns pending badge (subset of pending approvals)
+    api("/campaigns?status=pending_approval").then((rows) => {
+      updateCampaignsBadge((rows || []).length);
+    }).catch(() => {});
 
     const funnel = data.funnel;
     const max = Math.max(...funnel.map((f) => f.count), 1);
@@ -1166,6 +1171,30 @@ async function loadApprovals() {
       html += "</div></div>";
     }
 
+
+    if (data.campaigns && data.campaigns.length) {
+      html += `<div class="card"><h2 class="card-title"><i data-feather="send"></i> Campaign packets (${data.campaigns.length})</h2>
+        <p style="color:var(--text-muted);font-size:13px;margin:0 0 12px">Approve for human portal action only. No auto-submit.</p>
+        <div class="card-list">`;
+      html += data.campaigns.map((c) => `
+        <div class="list-card">
+          <div class="list-card-header">
+            <div>
+              <div class="list-card-title">${c.title}</div>
+              <div class="list-card-meta"><code>${c.label}</code> · ${c.channel || "—"} · ${c.priority || ""} · ${c.packet_path || ""}</div>
+            </div>
+            ${campaignStatusPill(c.status)}
+          </div>
+          <div class="list-card-body">${c.notes || ""}</div>
+          <div class="list-card-actions">
+            ${c.portal_url ? `<a class="btn btn-sm btn-secondary" href="${c.portal_url}" target="_blank" rel="noopener">Open portal</a>` : ""}
+            <button class="btn btn-sm btn-primary" onclick="approveCampaign('${c.id}')"><i data-feather="check"></i> Approve</button>
+            <button class="btn btn-sm btn-danger" onclick="rejectCampaign('${c.id}')"><i data-feather="x"></i> Reset pending</button>
+          </div>
+        </div>`).join("");
+      html += "</div></div>";
+    }
+
     el.innerHTML = html;
     feather.replace();
   } catch (e) {
@@ -1207,10 +1236,119 @@ window.addEventListener("DOMContentLoaded", () => {
 
 
 
+
+/* ── Campaigns (Phase 4 submission packets) ───────────────────── */
+function campaignStatusPill(status) {
+  const s = status || "pending_approval";
+  const cls = s === "approved" ? "cat-approved" : s === "submitted_externally" ? "cat-listed" : "cat-not_started";
+  return `<span class="catalog-status-pill ${cls}">${s.replace(/_/g, " ")}</span>`;
+}
+
+function updateCampaignsBadge(count) {
+  const badge = $("#campaigns-badge");
+  if (!badge) return;
+  if (count > 0) {
+    badge.textContent = count;
+    badge.style.display = "inline-flex";
+  } else {
+    badge.style.display = "none";
+  }
+}
+
+async function loadCampaigns() {
+  const el = $("#campaigns-list");
+  if (!el) return;
+  el.innerHTML = '<p style="color:var(--text-muted)">Loading…</p>';
+  try {
+    const status = ($("#filter-campaign-status") || {}).value || "";
+    const q = status ? ("?status=" + encodeURIComponent(status)) : "";
+    const rows = await api("/campaigns" + q);
+    const pending = (rows || []).filter((c) => c.status === "pending_approval").length;
+    updateCampaignsBadge(pending);
+    if (!rows.length) {
+      el.innerHTML = '<div class="card"><p style="color:var(--text-muted);text-align:center;padding:32px">No campaigns. Seed runs on API startup.</p></div>';
+      return;
+    }
+    el.innerHTML = `<div class="card"><div class="card-list">` + rows.map((c) => {
+      const checklist = (c.checklist || []).map((x) => `<li>${x}</li>`).join("");
+      let actions = "";
+      if (c.status === "pending_approval") {
+        actions = `
+          ${c.portal_url ? `<a class="btn btn-sm btn-secondary" href="${c.portal_url}" target="_blank" rel="noopener">Open portal (human)</a>` : ""}
+          <button class="btn btn-sm btn-primary" onclick="approveCampaign('${c.id}')"><i data-feather="check"></i> Approve</button>`;
+      } else if (c.status === "approved") {
+        actions = `
+          ${c.portal_url ? `<a class="btn btn-sm btn-secondary" href="${c.portal_url}" target="_blank" rel="noopener">Open portal (human)</a>` : ""}
+          <button class="btn btn-sm btn-primary" onclick="markCampaignSubmitted('${c.id}')"><i data-feather="check-circle"></i> Mark submitted</button>
+          <button class="btn btn-sm btn-danger" onclick="rejectCampaign('${c.id}')">Reset pending</button>`;
+      } else {
+        actions = `<span style="color:var(--text-muted);font-size:12px">Submitted externally ${c.submitted_at ? fmtDate(c.submitted_at) : ""}</span>`;
+      }
+      return `
+        <div class="list-card">
+          <div class="list-card-header">
+            <div>
+              <div class="list-card-title">${c.title}</div>
+              <div class="list-card-meta"><code>${c.label}</code> · ${c.channel || "—"} · ${c.priority || ""} · packet: ${c.packet_path || "—"}</div>
+            </div>
+            ${campaignStatusPill(c.status)}
+          </div>
+          <div class="list-card-body">${c.notes || ""}
+            ${checklist ? `<ul style="margin:8px 0 0;padding-left:18px;font-size:13px">${checklist}</ul>` : ""}
+          </div>
+          <div class="list-card-actions">${actions}</div>
+        </div>`;
+    }).join("") + `</div></div>`;
+    feather.replace();
+  } catch (e) {
+    showToast("Could not load campaigns: " + e.message, "error");
+    el.innerHTML = "";
+  }
+}
+
+async function approveCampaign(id) {
+  try {
+    await post(`/campaigns/${id}/approve`, {});
+    showToast("Campaign approved — human must submit externally");
+    loadCampaigns();
+    loadApprovals();
+    loadDashboard();
+  } catch (e) {
+    showToast("Error: " + e.message, "error");
+  }
+}
+
+async function rejectCampaign(id) {
+  if (!confirm("Reset this campaign to pending_approval?")) return;
+  try {
+    await post(`/campaigns/${id}/reject`, {});
+    showToast("Campaign reset to pending_approval");
+    loadCampaigns();
+    loadApprovals();
+    loadDashboard();
+  } catch (e) {
+    showToast("Error: " + e.message, "error");
+  }
+}
+
+async function markCampaignSubmitted(id) {
+  if (!confirm("Confirm you (or James) already completed the external portal/email. Closing Agent did not submit anything.")) return;
+  try {
+    await post(`/campaigns/${id}/mark-submitted`, {});
+    showToast("Marked submitted_externally");
+    loadCampaigns();
+    loadCatalogMonitor();
+    loadDashboard();
+  } catch (e) {
+    showToast("Error: " + e.message, "error");
+  }
+}
+
+
 /* ── Catalog Monitor (distributor listings + pricing) ─────────── */
 let _catalogListings = [];
 
-const CATALOG_FOCUS_CHANNELS = ["Grainger", "McMaster", "MSC", "Zoro", "Thomasnet", "Aerospace TBD"];
+const CATALOG_FOCUS_CHANNELS = ["Grainger", "McMaster", "MSC", "Zoro", "Thomasnet", "PartsBase", "Krones OEM", "Sidel OEM"];
 
 function catalogStatusPill(status) {
   const s = status || "not_started";
