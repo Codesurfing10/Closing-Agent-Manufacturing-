@@ -46,6 +46,16 @@ Created in `init_db()`; seed is **idempotent** by `channel`.
 | P3 | Applied | portal_review | applied.com/supplier-diversity | not_started |
 | P4 | Grainger | portal_review | JAGGAER WWGrainger login | not_started |
 | P5 | McMaster | closed_bd | mcmaster.com/contact (**no apply URL**) | not_started |
+| P2 | PartsBase | marketplace | partsbase.com/solutions/seller | not_started |
+| P2 | ILS | marketplace | ilsmart.com sellers page | not_started |
+| P2 | Krones OEM | closed_bd | krones.com suppliers-portal (invite) | not_started |
+| P2 | Sidel OEM | closed_bd | sidel.com supplier-network (Ariba after invite) | not_started |
+| P3 | KHS OEM | closed_bd | khs.com compliance / BD (Connect ≠ supplier apply) | not_started |
+| P3 | Sipa OEM | closed_bd | sipasolutions.com contact | not_started |
+| P4 | Boeing ESLC | portal_review | boeingsuppliers.com/become | not_started |
+| P6 | Digi-Key | open_apply | SupplierQuestionnaire.PDF (low fit) | not_started |
+
+Phase 2 research docs: `AEROSPACE_SPACE_CATALOG_CHANNELS.md`, `OEM_KRONES_SIDEL_CAMPAIGN.md`, `LISTING_CAMPAIGNS_QUEUE.md`. Campaign drafts: `deliverables/campaigns/`.
 
 ---
 
