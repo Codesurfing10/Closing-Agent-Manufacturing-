@@ -236,6 +236,23 @@ def init_db():
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS campaigns (
+                id TEXT PRIMARY KEY,
+                label TEXT NOT NULL UNIQUE,
+                channel TEXT,
+                title TEXT NOT NULL,
+                packet_path TEXT,
+                status TEXT NOT NULL DEFAULT 'pending_approval',
+                notes TEXT,
+                checklist_json TEXT,
+                portal_url TEXT,
+                priority TEXT DEFAULT 'P2',
+                approved_at TEXT,
+                submitted_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS invoices (
                 id TEXT PRIMARY KEY,
                 order_id TEXT NOT NULL,
@@ -268,6 +285,7 @@ def init_db():
     _seed_contacts()
     _seed_inventory()
     _seed_distributor_listings()
+    _seed_campaigns()
 
 
 # Pre-populated contacts for PET manufacturing targets
@@ -771,6 +789,119 @@ def _seed_distributor_listings():
                     now,
                 ),
             )
+
+
+
+_CAMPAIGN_STATUSES = ("pending_approval", "approved", "submitted_externally")
+
+_SEED_CAMPAIGNS = [
+    {
+        "label": "campaign:msc",
+        "channel": "MSC",
+        "title": "MSC New Supplier Inquiry",
+        "packet_path": "deliverables/campaigns/msc-submission-packet.md",
+        "portal_url": "https://www.mscdirect.com/customer-service/new-supplier-inquiry",
+        "priority": "P2",
+        "notes": "Link: MSC_SUPPLIER_APPLICATION_DRAFT.md. Checklist W-9/COI/photos/GTIN. No auto-submit.",
+        "checklist_json": '["W-9","COI","product photos","GTIN/GS1","public one-pager","seller of record","James approve then manual submit"]',
+    },
+    {
+        "label": "campaign:zoro",
+        "channel": "Zoro",
+        "title": "Sell on Zoro partnership apply",
+        "packet_path": "deliverables/campaigns/zoro-submission-packet.md",
+        "portal_url": "https://www.zoro.com/sell/",
+        "priority": "P2",
+        "notes": "Link: ZORO_SELL_ON_ZORO_APPLICATION_DRAFT.md. Confirm dropship SLA. No auto-submit.",
+        "checklist_json": '["W-9","COI","dropship SLA","photos","GTIN TBD","attribute sheet","James approve then manual apply"]',
+    },
+    {
+        "label": "campaign:thomasnet",
+        "channel": "Thomasnet",
+        "title": "Thomasnet company claim",
+        "packet_path": "deliverables/campaigns/thomasnet-claim-checklist.md",
+        "portal_url": "https://www.thomasnet.com/",
+        "priority": "P1",
+        "notes": "Claim/verify profile; public-safe categories only. No secrets upload.",
+        "checklist_json": '["locate/claim profile","public blurb","categories","contact info","optional public one-pager","James approve then claim"]',
+    },
+    {
+        "label": "campaign:grainger",
+        "channel": "Grainger",
+        "title": "Grainger JAGGAER registration (BD)",
+        "packet_path": "deliverables/campaigns/grainger-jaggaer-checklist.md",
+        "portal_url": "https://solutions.sciquest.com/apps/Router/SupplierLogin?CustOrg=WWGrainger",
+        "priority": "P4",
+        "notes": "JAGGAER profile + vendor contact request. Not auto-apply / no self-serve SKU upload.",
+        "checklist_json": '["JAGGAER profile","W-9 match","UNSPSC one-pager","vendor contact request","James approve registration"]',
+    },
+    {
+        "label": "campaign:mcmaster",
+        "channel": "McMaster",
+        "title": "McMaster BD outreach (no apply URL)",
+        "packet_path": "deliverables/campaigns/mcmaster-bd-outreach.md",
+        "portal_url": "https://www.mcmaster.com/contact",
+        "priority": "P5",
+        "notes": "No public supplier apply URL — do not invent one. Warm intro / customer pull only. NDA-first for specs.",
+        "checklist_json": '["warm intro path identified","NDA-first draft queued if outreach","no fake apply URL","James approve before any send"]',
+    },
+]
+
+
+def _seed_campaigns():
+    """Idempotent seed of Phase 4 submission campaign packets by label."""
+    now = datetime.utcnow().isoformat()
+    with get_db() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS campaigns (
+                id TEXT PRIMARY KEY,
+                label TEXT NOT NULL UNIQUE,
+                channel TEXT,
+                title TEXT NOT NULL,
+                packet_path TEXT,
+                status TEXT NOT NULL DEFAULT 'pending_approval',
+                notes TEXT,
+                checklist_json TEXT,
+                portal_url TEXT,
+                priority TEXT DEFAULT 'P2',
+                approved_at TEXT,
+                submitted_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        for item in _SEED_CAMPAIGNS:
+            existing = conn.execute(
+                "SELECT id FROM campaigns WHERE label=?", (item["label"],)
+            ).fetchone()
+            if existing:
+                continue
+            conn.execute(
+                """INSERT INTO campaigns
+                   (id, label, channel, title, packet_path, status, notes,
+                    checklist_json, portal_url, priority, approved_at, submitted_at,
+                    created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    str(uuid.uuid4()),
+                    item["label"],
+                    item["channel"],
+                    item["title"],
+                    item["packet_path"],
+                    "pending_approval",
+                    item["notes"],
+                    item.get("checklist_json"),
+                    item.get("portal_url"),
+                    item.get("priority", "P2"),
+                    None,
+                    None,
+                    now,
+                    now,
+                ),
+            )
+
 
 
 def _contact_nda_signed(contact_id: Optional[str] = None, lead_id: Optional[str] = None) -> bool:
@@ -1406,6 +1537,29 @@ class OrderStatusUpdate(BaseModel):
 
 class InvoiceStatusUpdate(BaseModel):
     status: str  # Draft | Sent | Paid | Void
+
+
+class CampaignCreate(BaseModel):
+    label: str
+    title: str
+    channel: Optional[str] = None
+    packet_path: Optional[str] = None
+    notes: Optional[str] = None
+    checklist_json: Optional[str] = None
+    portal_url: Optional[str] = None
+    priority: Optional[str] = "P2"
+
+
+class CampaignUpdate(BaseModel):
+    title: Optional[str] = None
+    channel: Optional[str] = None
+    packet_path: Optional[str] = None
+    notes: Optional[str] = None
+    checklist_json: Optional[str] = None
+    portal_url: Optional[str] = None
+    priority: Optional[str] = None
+    status: Optional[str] = None
+
 
 class ManufacturingJobStatusUpdate(BaseModel):
     status: str
@@ -2354,7 +2508,7 @@ def get_funnel():
             "(SELECT COUNT(*) FROM emails WHERE approval_status='pending') + "
             "(SELECT COUNT(*) FROM meetings WHERE approval_status='pending') + "
             "(SELECT COUNT(*) FROM feedback WHERE approval_status='pending') + "
-            "(SELECT COUNT(*) FROM invoices WHERE approval_status='pending') as pending_approvals "
+            "(SELECT COUNT(*) FROM invoices WHERE approval_status='pending') + (SELECT COUNT(*) FROM campaigns WHERE status='pending_approval') as pending_approvals "
             "FROM contacts"
         ).fetchone()
     stage_counts = {r["stage"]: r["count"] for r in rows}
@@ -2505,9 +2659,14 @@ def list_approvals():
             "JOIN contacts c ON i.contact_id = c.id "
             "WHERE i.approval_status = 'pending' ORDER BY i.created_at DESC"
         ).fetchall()
+        pending_campaigns = conn.execute(
+            "SELECT * FROM campaigns WHERE status='pending_approval' ORDER BY priority, created_at DESC"
+        ).fetchall()
+
     emails_list = [dict(r) for r in pending_emails]
     meetings_list = [dict(r) for r in pending_meetings]
     feedback_list = [dict(r) for r in pending_feedback]
+    campaigns_list = [dict(r) for r in pending_campaigns]
     invoices_list = []
     for r in pending_invoices:
         d = dict(r)
@@ -2523,7 +2682,11 @@ def list_approvals():
         "meetings": meetings_list,
         "feedback": feedback_list,
         "invoices": invoices_list,
-        "total": len(emails_list) + len(meetings_list) + len(feedback_list) + len(invoices_list),
+        "campaigns": campaigns_list,
+        "total": (
+            len(emails_list) + len(meetings_list) + len(feedback_list)
+            + len(invoices_list) + len(campaigns_list)
+        ),
     }
 
 
@@ -3004,6 +3167,200 @@ def patch_distributor_listing_pricing(listing_id: str, body: DistributorListingP
     return get_distributor_listing_pricing(listing_id)
 
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Routes – Campaigns (Phase 4 submission packets; NO external auto-submit)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _campaign_row(row) -> dict:
+    d = dict(row)
+    raw = d.get("checklist_json")
+    if isinstance(raw, str) and raw.strip():
+        try:
+            d["checklist"] = json.loads(raw)
+        except Exception:
+            d["checklist"] = []
+    else:
+        d["checklist"] = []
+    return d
+
+
+@app.get("/campaigns")
+def list_campaigns(status: Optional[str] = None, label: Optional[str] = None):
+    """List submission/BD campaign packets. Status: pending_approval | approved | submitted_externally."""
+    with get_db() as conn:
+        _seed_campaigns()
+        query = "SELECT * FROM campaigns WHERE 1=1"
+        params: list = []
+        if status:
+            query += " AND status=?"
+            params.append(status)
+        if label:
+            query += " AND label=?"
+            params.append(label)
+        query += " ORDER BY CASE priority WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 WHEN 'P3' THEN 3 WHEN 'P4' THEN 4 WHEN 'P5' THEN 5 ELSE 6 END, created_at DESC"
+        rows = conn.execute(query, params).fetchall()
+    return [_campaign_row(r) for r in rows]
+
+
+@app.post("/campaigns", status_code=201)
+def create_campaign(body: CampaignCreate):
+    label = (body.label or "").strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="label required (e.g. campaign:msc)")
+    if not label.startswith("campaign:"):
+        label = "campaign:" + label
+    now = datetime.utcnow().isoformat()
+    cid = str(uuid.uuid4())
+    with get_db() as conn:
+        _seed_campaigns()
+        existing = conn.execute("SELECT id FROM campaigns WHERE label=?", (label,)).fetchone()
+        if existing:
+            raise HTTPException(status_code=409, detail=f"Campaign label already exists: {label}")
+        conn.execute(
+            """INSERT INTO campaigns
+               (id, label, channel, title, packet_path, status, notes, checklist_json,
+                portal_url, priority, approved_at, submitted_at, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                cid,
+                label,
+                body.channel,
+                body.title,
+                body.packet_path,
+                "pending_approval",
+                body.notes,
+                body.checklist_json,
+                body.portal_url,
+                body.priority or "P2",
+                None,
+                None,
+                now,
+                now,
+            ),
+        )
+        row = conn.execute("SELECT * FROM campaigns WHERE id=?", (cid,)).fetchone()
+    return _campaign_row(row)
+
+
+@app.get("/campaigns/{campaign_id}")
+def get_campaign(campaign_id: str):
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
+        if not row:
+            row = conn.execute("SELECT * FROM campaigns WHERE label=?", (campaign_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return _campaign_row(row)
+
+
+@app.patch("/campaigns/{campaign_id}")
+def patch_campaign(campaign_id: str, body: CampaignUpdate):
+    fields = body.dict(exclude_unset=True)
+    if not fields:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    if "status" in fields and fields["status"] not in _CAMPAIGN_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid status. Choose from: {list(_CAMPAIGN_STATUSES)}. "
+                   "Use POST .../mark-submitted for submitted_externally after human portal action.",
+        )
+    now = datetime.utcnow().isoformat()
+    fields["updated_at"] = now
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        if fields.get("status") == "approved" and not row["approved_at"]:
+            fields["approved_at"] = now
+        if fields.get("status") == "submitted_externally" and not row["submitted_at"]:
+            fields["submitted_at"] = now
+        sets = ", ".join(f"{k}=?" for k in fields)
+        vals = list(fields.values()) + [campaign_id]
+        conn.execute(f"UPDATE campaigns SET {sets} WHERE id=?", vals)
+        updated = conn.execute("SELECT * FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
+    return _campaign_row(updated)
+
+
+@app.post("/campaigns/{campaign_id}/approve")
+def approve_campaign(campaign_id: str):
+    """James approves packet for human external action. Does NOT submit to any portal."""
+    now = datetime.utcnow().isoformat()
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        if row["status"] == "submitted_externally":
+            raise HTTPException(status_code=400, detail="Already marked submitted_externally")
+        conn.execute(
+            """UPDATE campaigns SET status='approved', approved_at=COALESCE(approved_at, ?),
+               updated_at=? WHERE id=?""",
+            (now, now, campaign_id),
+        )
+        updated = conn.execute("SELECT * FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
+    return {
+        **_campaign_row(updated),
+        "message": "Approved for human action only — Closing Agent will not submit externally.",
+    }
+
+
+@app.post("/campaigns/{campaign_id}/reject")
+def reject_campaign(campaign_id: str):
+    """Return campaign to pending_approval (or leave notes). Soft reject = back to pending."""
+    now = datetime.utcnow().isoformat()
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        if row["status"] == "submitted_externally":
+            raise HTTPException(status_code=400, detail="Cannot reject after submitted_externally")
+        conn.execute(
+            """UPDATE campaigns SET status='pending_approval', approved_at=NULL, updated_at=?
+               WHERE id=?""",
+            (now, campaign_id),
+        )
+        updated = conn.execute("SELECT * FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
+    return {**_campaign_row(updated), "message": "Campaign reset to pending_approval"}
+
+
+@app.post("/campaigns/{campaign_id}/mark-submitted")
+def mark_campaign_submitted(campaign_id: str):
+    """Mark submitted_externally ONLY after a human completed the portal/email outside the app."""
+    now = datetime.utcnow().isoformat()
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        if row["status"] != "approved":
+            raise HTTPException(
+                status_code=400,
+                detail="Approve the campaign first, then Mark submitted after the human portal action.",
+            )
+        conn.execute(
+            """UPDATE campaigns SET status='submitted_externally', submitted_at=?, updated_at=?
+               WHERE id=?""",
+            (now, now, campaign_id),
+        )
+        # Best-effort: flip matching distributor listing to applied
+        if row["channel"]:
+            listing = conn.execute(
+                "SELECT id, status FROM distributor_listings WHERE channel=?",
+                (row["channel"],),
+            ).fetchone()
+            if listing and listing["status"] in ("not_started", "on_hold"):
+                conn.execute(
+                    """UPDATE distributor_listings
+                       SET status='applied', applied_at=COALESCE(applied_at, ?), updated_at=?
+                       WHERE id=?""",
+                    (now, now, listing["id"]),
+                )
+        updated = conn.execute("SELECT * FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
+    return {
+        **_campaign_row(updated),
+        "message": "Recorded as submitted_externally (human action). No portal was called by the API.",
+    }
+
+
 @app.get("/health")
 def health():
     payload = {
@@ -3012,6 +3369,8 @@ def health():
         "product": "LC-Flow Valve",
         "distributor_listings": True,
         "catalog_monitor_pricing": True,
+        "campaigns": True,
+        "campaigns_external_submit": False,
     }
     payload.update(xometry_config_summary())
     return payload

@@ -49,6 +49,10 @@
       <a href="#" class="nav-item" data-view="agent">
         <i data-feather="cpu"></i> AI Agent
       </a>
+      <a href="#" class="nav-item" data-view="campaigns">
+        <i data-feather="send"></i> Campaigns
+        <span class="nav-badge" id="campaigns-badge" style="display:none">0</span>
+      </a>
       <a href="#" class="nav-item" data-view="approvals">
         <i data-feather="check-circle"></i> Approvals
         <span class="nav-badge" id="approvals-badge" style="display:none">0</span>
@@ -343,6 +347,31 @@
           <button class="chip" data-prompt="Suggest next steps">Next steps</button>
         </div>
       </div>
+    </section>
+
+    <!-- ── Campaigns view (Phase 4 submission packets) ── -->
+    <section id="view-campaigns" class="view">
+      <header class="view-header">
+        <h1>Campaigns</h1>
+        <span class="subtitle">Approvals-gated listing packets — human submits externally; Mark submitted only after</span>
+      </header>
+      <div class="card" style="margin-bottom:16px">
+        <p style="color:var(--text-muted);margin:0;font-size:13px">
+          Closing Agent <strong>never</strong> auto-submits MSC/Zoro/Grainger/Thomasnet/McMaster portals or sends vendor email.
+          Status flow: <code>pending_approval</code> → <code>approved</code> → <code>submitted_externally</code> (manual).
+          Packets live under <code>deliverables/PHASE4_SUBMISSION_PACKETS.md</code>. Pricing from Catalog Monitor / inventory.
+        </p>
+      </div>
+      <div class="toolbar" style="gap:8px;margin-bottom:12px;flex-wrap:wrap">
+        <select id="filter-campaign-status" class="form-select" onchange="loadCampaigns()">
+          <option value="">All statuses</option>
+          <option value="pending_approval">pending_approval</option>
+          <option value="approved">approved</option>
+          <option value="submitted_externally">submitted_externally</option>
+        </select>
+        <button class="btn btn-secondary btn-sm" onclick="loadCampaigns()"><i data-feather="refresh-cw"></i> Refresh</button>
+      </div>
+      <div id="campaigns-list"></div>
     </section>
     <!-- ── Approvals view ── -->
     <section id="view-approvals" class="view">

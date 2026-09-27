@@ -126,3 +126,9 @@ See `deliverables/DISTRIBUTOR_LISTING_TRACKER.md`.
 | Submit via official URL only | James | |
 
 **Again: DRAFT only. Do not submit until James reviews.**
+
+---
+
+## Phase 4 gate
+
+See `campaigns/msc-submission-packet.md` and app campaign label **`campaign:msc`**. Approve in UI, then submit the official MSC form manually. Use **Mark submitted** only after.
