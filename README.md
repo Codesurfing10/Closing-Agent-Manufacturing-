@@ -68,6 +68,8 @@ Offline CRM exports and sales collateral live under [`deliverables/`](deliverabl
 | `SALES_BRIEF.md` | Pitch, ICP, top opportunities, NDA workflow, curl examples |
 | `XOMETRY_INTEGRATION_RESEARCH.md` | API gap research + recommended architecture |
 | `XOMETRY_HANDOFF.md` | Operator guide for mock/manual Xometry flow |
+| `CALENDAR_INVITES.md` | Meeting .ics invites + pending invite emails |
+| `BILLING_INVOICES.md` | Post-PO Draft invoices, HTML/PDF, approvals |
 
 ---
 
@@ -116,7 +118,7 @@ API docs available at `http://localhost:8000/docs`.
 
 There is **no public buyer Instant Quote / place-order API**. Closing Agent ships a handoff layer that works offline today and never auto-charges.
 
-**Flow (prose):** Customer PO received → `PUT /orders/{id}/status` with `status=Confirmed` and optional `po_number` → `on_po_acquired` creates an idempotent `manufacturing_jobs` row → mode `mock` starts `queued` with fake quote/job IDs and ETA; mode `manual` starts `awaiting_human` with an RFQ checklist → human clicks **Approve Xometry handoff** (`POST /manufacturing/jobs/{id}/approve-xometry`) → status `submitted` (manual: you still place the order on xometry.com) → in `mock`, **Mock advance** steps `submitted` → `in_production` → `shipped` → `delivered` and mirrors the order status. Mode `api` returns a clear error unless `XOMETRY_API_KEY` is set; even then approve is required and no paid placement is called.
+**Flow (prose):** Customer PO received → `PUT /orders/{id}/status` with `status=Confirmed` and optional `po_number` → `on_po_acquired` creates an idempotent `manufacturing_jobs` row (and a Draft invoice when `po_number` is set — see `deliverables/BILLING_INVOICES.md`) → mode `mock` starts `queued` with fake quote/job IDs and ETA; mode `manual` starts `awaiting_human` with an RFQ checklist → human clicks **Approve Xometry handoff** (`POST /manufacturing/jobs/{id}/approve-xometry`) → status `submitted` (manual: you still place the order on xometry.com) → in `mock`, **Mock advance** steps `submitted` → `in_production` → `shipped` → `delivered` and mirrors the order status. Mode `api` returns a clear error unless `XOMETRY_API_KEY` is set; even then approve is required and no paid placement is called.
 
 SKU map: `LCP061000` → FDM / PC-ISO · `LCSS61000` → DMLS / Stainless Steel 316/L · `LCA061000` → DMLS / Aluminum AlSi10Mg.
 
@@ -145,7 +147,13 @@ Operator guide: [`deliverables/XOMETRY_HANDOFF.md`](deliverables/XOMETRY_HANDOFF
 | `POST` | `/emails/{id}/send` | Mark email sent |
 | `POST` | `/meetings` | Schedule meeting + AI agenda (NDA-gated) |
 | `POST` | `/orders` | Create order (optional `status`, `po_number`) |
-| `PUT` | `/orders/{id}/status` | Update order status (+ optional `po_number`; Confirmed enqueues mfg job) |
+| `PUT` | `/orders/{id}/status` | Update order status (+ optional `po_number`; Confirmed enqueues mfg job + invoice if PO) |
+| `POST` | `/orders/{id}/invoice` | Manual create Draft invoice if missing (Confirmed) |
+| `GET` | `/invoices` | List invoices (`?order_id=`) |
+| `GET` | `/invoices/{id}` | Invoice detail |
+| `GET` | `/invoices/{id}/html` | Printable HTML invoice |
+| `GET` | `/invoices/{id}/pdf` | PDF (reportlab; else use HTML print) |
+| `PUT` | `/invoices/{id}/status` | Draft / Sent / Paid / Void (Sent requires approved) |
 | `GET` | `/orders/{id}/manufacturing` | Manufacturing job for order |
 | `GET` | `/manufacturing/jobs` | List manufacturing jobs |
 | `GET` | `/manufacturing/jobs/{id}` | Get job |
