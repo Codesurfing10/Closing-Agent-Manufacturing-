@@ -225,6 +225,13 @@ def init_db():
                 applied_at TEXT,
                 listed_at TEXT,
                 contact_email TEXT,
+                list_price_usd REAL,
+                map_price_usd REAL,
+                target_catalog_price_usd REAL,
+                currency TEXT NOT NULL DEFAULT 'USD',
+                last_status_check TEXT,
+                campaign_notes TEXT,
+                sku_pricing TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -358,6 +365,13 @@ def _migrate_db():
         "ALTER TABLE orders ADD COLUMN po_number TEXT",
         "ALTER TABLE emails ADD COLUMN meeting_id TEXT",
         "ALTER TABLE emails ADD COLUMN invoice_id TEXT",
+        "ALTER TABLE distributor_listings ADD COLUMN list_price_usd REAL",
+        "ALTER TABLE distributor_listings ADD COLUMN map_price_usd REAL",
+        "ALTER TABLE distributor_listings ADD COLUMN target_catalog_price_usd REAL",
+        "ALTER TABLE distributor_listings ADD COLUMN currency TEXT NOT NULL DEFAULT 'USD'",
+        "ALTER TABLE distributor_listings ADD COLUMN last_status_check TEXT",
+        "ALTER TABLE distributor_listings ADD COLUMN campaign_notes TEXT",
+        "ALTER TABLE distributor_listings ADD COLUMN sku_pricing TEXT",
     ]
     with get_db() as conn:
         for sql in migration_sqls:
@@ -560,26 +574,94 @@ _SEED_DISTRIBUTOR_LISTINGS = [
         "next_action_date": None,
         "contact_email": "sales@mcmaster.com",
     },
+    {
+        "channel": "Aerospace TBD",
+        "path_type": "closed_bd",
+        "status": "not_started",
+        "portal_url": None,
+        "priority": "P3",
+        "skus": _LC_FLOW_SKUS,
+        "notes": "Aerospace catalog / MRO channel TBD (Boeing/Airbus suppliers, aviation distributors). Placeholder for Phase 1 monitor.",
+        "next_action": "Identify aerospace catalog partners; map UNSPSC and OEM approved-vendor paths.",
+        "next_action_date": None,
+        "contact_email": None,
+    },
 ]
 
 
+def _inventory_price_map():
+    """SKU -> unit_price_usd from inventory (list prices)."""
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT sku, unit_price_usd FROM inventory WHERE unit_price_usd IS NOT NULL"
+        ).fetchall()
+    return {r["sku"]: float(r["unit_price_usd"]) for r in rows}
+
+
+def _build_sku_pricing(skus_csv: Optional[str], price_map: dict) -> tuple:
+    """Return (sku_pricing_json, list_price_usd) from inventory list prices.
+
+    list_price_usd is the entry SKU LCP061000 when present, else first priced SKU.
+    map_price and distributor/target prices stay null until set via PATCH.
+    """
+    import json as _json
+    skus = [s.strip() for s in (skus_csv or _LC_FLOW_SKUS).split(",") if s.strip()]
+    entries = []
+    for sku in skus:
+        list_p = price_map.get(sku)
+        entries.append({
+            "sku": sku,
+            "list_price_usd": list_p,
+            "map_price_usd": None,
+            "distributor_price_usd": None,
+        })
+    list_price = None
+    if "LCP061000" in price_map and "LCP061000" in skus:
+        list_price = price_map["LCP061000"]
+    elif entries:
+        for e in entries:
+            if e["list_price_usd"] is not None:
+                list_price = e["list_price_usd"]
+                break
+    return _json.dumps(entries), list_price
+
+
 def _seed_distributor_listings():
-    """Idempotent seed of priority distributor channels by channel name."""
+    """Idempotent seed of priority distributor channels by channel name.
+
+    Also backfills catalog pricing fields from inventory list prices when empty.
+    """
     now = datetime.utcnow().isoformat()
+    price_map = _inventory_price_map()
     with get_db() as conn:
         for item in _SEED_DISTRIBUTOR_LISTINGS:
+            sku_pricing, list_price = _build_sku_pricing(item["skus"], price_map)
             existing = conn.execute(
-                "SELECT id FROM distributor_listings WHERE channel=?",
+                "SELECT id, list_price_usd, sku_pricing FROM distributor_listings WHERE channel=?",
                 (item["channel"],),
             ).fetchone()
             if existing:
+                # Backfill pricing if not yet set (Phase 1 catalog monitor)
+                if existing["list_price_usd"] is None or not existing["sku_pricing"]:
+                    conn.execute(
+                        """UPDATE distributor_listings
+                           SET list_price_usd=COALESCE(list_price_usd, ?),
+                               currency=COALESCE(currency, 'USD'),
+                               sku_pricing=COALESCE(sku_pricing, ?),
+                               last_status_check=COALESCE(last_status_check, ?),
+                               updated_at=?
+                           WHERE id=?""",
+                        (list_price, sku_pricing, now, now, existing["id"]),
+                    )
                 continue
             conn.execute(
                 """INSERT INTO distributor_listings
                    (id, channel, path_type, status, portal_url, priority, skus,
                     notes, next_action, next_action_date, applied_at, listed_at,
-                    contact_email, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    contact_email, list_price_usd, map_price_usd,
+                    target_catalog_price_usd, currency, last_status_check,
+                    campaign_notes, sku_pricing, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     str(uuid.uuid4()),
                     item["channel"],
@@ -594,6 +676,13 @@ def _seed_distributor_listings():
                     None,
                     None,
                     item.get("contact_email"),
+                    list_price,
+                    None,
+                    None,
+                    "USD",
+                    now,
+                    None,
+                    sku_pricing,
                     now,
                     now,
                 ),
@@ -1315,6 +1404,13 @@ class DistributorListingCreate(BaseModel):
     next_action: Optional[str] = ""
     next_action_date: Optional[str] = None
     contact_email: Optional[str] = None
+    list_price_usd: Optional[float] = None
+    map_price_usd: Optional[float] = None
+    target_catalog_price_usd: Optional[float] = None
+    currency: Optional[str] = "USD"
+    last_status_check: Optional[str] = None
+    campaign_notes: Optional[str] = None
+    sku_pricing: Optional[str] = None
 
 class DistributorListingUpdate(BaseModel):
     channel: Optional[str] = None
@@ -1329,9 +1425,27 @@ class DistributorListingUpdate(BaseModel):
     applied_at: Optional[str] = None
     listed_at: Optional[str] = None
     contact_email: Optional[str] = None
+    list_price_usd: Optional[float] = None
+    map_price_usd: Optional[float] = None
+    target_catalog_price_usd: Optional[float] = None
+    currency: Optional[str] = None
+    last_status_check: Optional[str] = None
+    campaign_notes: Optional[str] = None
+    sku_pricing: Optional[str] = None
 
 class DistributorListingStatusUpdate(BaseModel):
     status: str  # not_started | applied | in_review | approved | rejected | listed | on_hold
+
+class DistributorListingPricingUpdate(BaseModel):
+    """PATCH body for catalog pricing on a listing (list / MAP / distributor target)."""
+    list_price_usd: Optional[float] = None
+    map_price_usd: Optional[float] = None
+    target_catalog_price_usd: Optional[float] = None  # distributor_price alias
+    distributor_price_usd: Optional[float] = None  # accepted alias -> target_catalog_price_usd
+    currency: Optional[str] = None
+    last_status_check: Optional[str] = None
+    campaign_notes: Optional[str] = None
+    sku_pricing: Optional[list] = None  # list of {sku, list_price_usd, map_price_usd, distributor_price_usd}
 
 class AgentRunRequest(BaseModel):
     task: str
@@ -2571,6 +2685,51 @@ def list_distributor_listings(status: Optional[str] = None, channel: Optional[st
     return [dict(r) for r in rows]
 
 
+@app.post("/distributor-listings/sync-prices-from-inventory")
+def sync_distributor_prices_from_inventory():
+    """Set list_price_usd + sku_pricing from inventory unit_price_usd for all listings.
+
+    Does not overwrite map_price_usd or target_catalog_price_usd (distributor targets).
+    No pricing sheet attached — inventory.csv / inventory table is the list-price source.
+    """
+    now = datetime.utcnow().isoformat()
+    price_map = _inventory_price_map()
+    updated = []
+    with get_db() as conn:
+        rows = conn.execute("SELECT id, channel, skus FROM distributor_listings").fetchall()
+        for row in rows:
+            sku_pricing, list_price = _build_sku_pricing(row["skus"], price_map)
+            conn.execute(
+                """UPDATE distributor_listings
+                   SET list_price_usd=?, sku_pricing=?, currency=COALESCE(currency, 'USD'),
+                       last_status_check=?, updated_at=?
+                   WHERE id=?""",
+                (list_price, sku_pricing, now, now, row["id"]),
+            )
+            updated.append({
+                "id": row["id"],
+                "channel": row["channel"],
+                "list_price_usd": list_price,
+                "sku_count": len(_json_loads_safe(sku_pricing)),
+            })
+    return {
+        "synced": len(updated),
+        "source": "inventory.unit_price_usd",
+        "skus": list(price_map.keys()),
+        "listings": updated,
+        "message": "List prices synced from inventory; MAP/target catalog prices left unchanged",
+    }
+
+
+def _json_loads_safe(s):
+    import json as _json
+    try:
+        return _json.loads(s) if s else []
+    except Exception:
+        return []
+
+
+
 @app.post("/distributor-listings", status_code=201)
 def create_distributor_listing(body: DistributorListingCreate):
     if body.path_type not in _DISTRIBUTOR_PATH_TYPES:
@@ -2592,16 +2751,30 @@ def create_distributor_listing(body: DistributorListingCreate):
         ).fetchone()
         if existing:
             raise HTTPException(status_code=409, detail=f"Channel {body.channel} already exists")
+        price_map = _inventory_price_map()
+        sku_pricing = body.sku_pricing
+        list_price = body.list_price_usd
+        if sku_pricing is None or list_price is None:
+            built_json, built_list = _build_sku_pricing(body.skus, price_map)
+            if sku_pricing is None:
+                sku_pricing = built_json
+            if list_price is None:
+                list_price = built_list
         conn.execute(
             """INSERT INTO distributor_listings
                (id, channel, path_type, status, portal_url, priority, skus,
                 notes, next_action, next_action_date, applied_at, listed_at,
-                contact_email, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                contact_email, list_price_usd, map_price_usd,
+                target_catalog_price_usd, currency, last_status_check,
+                campaign_notes, sku_pricing, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 lid, body.channel, body.path_type, status, body.portal_url,
                 body.priority or "P3", body.skus, body.notes, body.next_action,
-                body.next_action_date, None, None, body.contact_email, now, now,
+                body.next_action_date, None, None, body.contact_email,
+                list_price, body.map_price_usd, body.target_catalog_price_usd,
+                body.currency or "USD", body.last_status_check or now,
+                body.campaign_notes, sku_pricing, now, now,
             ),
         )
     return {"id": lid, "channel": body.channel, "status": status, "message": "Distributor listing created"}
@@ -2684,6 +2857,69 @@ def update_distributor_listing_status(listing_id: str, body: DistributorListingS
     return dict(updated)
 
 
+
+@app.get("/distributor-listings/{listing_id}/pricing")
+def get_distributor_listing_pricing(listing_id: str):
+    """Return catalog pricing fields for a distributor listing."""
+    import json as _json
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM distributor_listings WHERE id=?", (listing_id,)
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Distributor listing not found")
+    d = dict(row)
+    sku_pricing = []
+    if d.get("sku_pricing"):
+        try:
+            sku_pricing = _json.loads(d["sku_pricing"])
+        except Exception:
+            sku_pricing = []
+    return {
+        "id": d["id"],
+        "channel": d["channel"],
+        "skus": d.get("skus"),
+        "list_price_usd": d.get("list_price_usd"),
+        "map_price_usd": d.get("map_price_usd"),
+        "target_catalog_price_usd": d.get("target_catalog_price_usd"),
+        "distributor_price_usd": d.get("target_catalog_price_usd"),
+        "currency": d.get("currency") or "USD",
+        "last_status_check": d.get("last_status_check"),
+        "campaign_notes": d.get("campaign_notes"),
+        "sku_pricing": sku_pricing,
+        "updated_at": d.get("updated_at"),
+    }
+
+
+@app.patch("/distributor-listings/{listing_id}/pricing")
+def patch_distributor_listing_pricing(listing_id: str, body: DistributorListingPricingUpdate):
+    """Update list / MAP / target catalog (distributor) pricing on a listing."""
+    import json as _json
+    fields = body.dict(exclude_unset=True)
+    if not fields:
+        raise HTTPException(status_code=400, detail="No pricing fields to update")
+    # Alias distributor_price_usd -> target_catalog_price_usd
+    if "distributor_price_usd" in fields:
+        if "target_catalog_price_usd" not in fields:
+            fields["target_catalog_price_usd"] = fields["distributor_price_usd"]
+        del fields["distributor_price_usd"]
+    if "sku_pricing" in fields and fields["sku_pricing"] is not None:
+        fields["sku_pricing"] = _json.dumps(fields["sku_pricing"])
+    now = datetime.utcnow().isoformat()
+    fields["updated_at"] = now
+    if "last_status_check" not in fields:
+        fields["last_status_check"] = now
+    sets = ", ".join(f"{k}=?" for k in fields)
+    vals = list(fields.values()) + [listing_id]
+    with get_db() as conn:
+        result = conn.execute(
+            f"UPDATE distributor_listings SET {sets} WHERE id=?", vals
+        )
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Distributor listing not found")
+    return get_distributor_listing_pricing(listing_id)
+
+
 @app.get("/health")
 def health():
     payload = {
@@ -2691,6 +2927,7 @@ def health():
         "timestamp": datetime.utcnow().isoformat(),
         "product": "LC-Flow Valve",
         "distributor_listings": True,
+        "catalog_monitor_pricing": True,
     }
     payload.update(xometry_config_summary())
     return payload

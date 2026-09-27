@@ -24,6 +24,9 @@ function post(path, body) {
 function put(path, body) {
   return api(path, { method: "PUT", body: JSON.stringify(body) });
 }
+function patch(path, body) {
+  return api(path, { method: "PATCH", body: JSON.stringify(body) });
+}
 function del(path) {
   return api(path, { method: "DELETE" });
 }
@@ -120,6 +123,7 @@ async function loadView(view) {
     case "feedback": return loadFeedback();
     case "leads": return loadLeads();
     case "inventory": return loadInventory();
+    case "catalog": return loadCatalogMonitor();
     case "agent": return loadAgent();
     case "approvals": return loadApprovals();
   }
@@ -1202,6 +1206,196 @@ window.addEventListener("DOMContentLoaded", () => {
 });
 
 
+
+/* ── Catalog Monitor (distributor listings + pricing) ─────────── */
+let _catalogListings = [];
+
+const CATALOG_FOCUS_CHANNELS = ["Grainger", "McMaster", "MSC", "Zoro", "Thomasnet", "Aerospace TBD"];
+
+function catalogStatusPill(status) {
+  const s = status || "not_started";
+  return `<span class="catalog-status-pill cat-${s}">${s.replace(/_/g, " ")}</span>`;
+}
+
+async function loadCatalogMonitor() {
+  try {
+    const channel = ($("#filter-catalog-channel") || {}).value || "";
+    const status = ($("#filter-catalog-status") || {}).value || "";
+    const params = new URLSearchParams();
+    if (channel) params.set("channel", channel);
+    if (status) params.set("status", status);
+    const q = params.toString() ? "?" + params.toString() : "";
+    _catalogListings = await api("/distributor-listings" + q);
+    renderCatalogStatusBoard(_catalogListings);
+    renderCatalogTable(_catalogListings);
+  } catch (e) {
+    showToast("Could not load catalog monitor: " + e.message, "error");
+  }
+}
+
+function renderCatalogStatusBoard(rows) {
+  // Board uses unfiltered totals when a channel filter is on — still show current set
+  const total = rows.length;
+  const notStarted = rows.filter((r) => r.status === "not_started").length;
+  const listed = rows.filter((r) => r.status === "listed").length;
+  const inFlight = rows.filter((r) =>
+    ["applied", "in_review", "approved"].includes(r.status)
+  ).length;
+  const priced = rows.filter((r) => r.list_price_usd != null).length;
+  const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
+  set("#cat-stat-total", total);
+  set("#cat-stat-not-started", notStarted);
+  set("#cat-stat-in-flight", inFlight);
+  set("#cat-stat-listed", listed);
+  set("#cat-stat-priced", priced);
+}
+
+function renderCatalogTable(rows) {
+  const tbody = $("#catalog-tbody");
+  if (!tbody) return;
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--text-muted);padding:32px">No distributor listings. Seed runs on API startup.</td></tr>';
+    return;
+  }
+  // Prefer focus channels first when unfiltered
+  const focus = new Set(CATALOG_FOCUS_CHANNELS);
+  const sorted = [...rows].sort((a, b) => {
+    const af = focus.has(a.channel) ? 0 : 1;
+    const bf = focus.has(b.channel) ? 0 : 1;
+    if (af !== bf) return af - bf;
+    return String(a.priority || "").localeCompare(String(b.priority || ""));
+  });
+  tbody.innerHTML = sorted.map((r) => {
+    const skus = (r.skus || "").split(",").filter(Boolean)
+      .map((s) => `<span class="catalog-sku-chip">${s.trim()}</span>`).join("");
+    const highlight = focus.has(r.channel) ? ' style="background:rgba(88,166,255,0.06)"' : "";
+    return `
+      <tr${highlight}>
+        <td><strong>${fmt(r.priority)}</strong></td>
+        <td><strong>${fmt(r.channel)}</strong></td>
+        <td>${catalogStatusPill(r.status)}</td>
+        <td>${r.list_price_usd != null ? fmtUSD(r.list_price_usd) : "–"}</td>
+        <td>${r.map_price_usd != null ? fmtUSD(r.map_price_usd) : "–"}</td>
+        <td>${r.target_catalog_price_usd != null ? fmtUSD(r.target_catalog_price_usd) : "–"}</td>
+        <td>${fmt(r.currency || "USD")}</td>
+        <td style="font-size:12px;color:var(--text-muted)">${r.last_status_check ? fmtDate(r.last_status_check) : "–"}</td>
+        <td>${skus || "–"}</td>
+        <td>
+          <button class="btn btn-sm btn-secondary" onclick="openCatalogPricing('${r.id}')">Edit Pricing</button>
+        </td>
+      </tr>`;
+  }).join("");
+  feather.replace();
+}
+
+async function openCatalogPricing(id) {
+  let pricing;
+  try {
+    pricing = await api(`/distributor-listings/${id}/pricing`);
+  } catch (e) {
+    return showToast("Could not load pricing: " + e.message, "error");
+  }
+  const skuRows = (pricing.sku_pricing || []).map((s, i) => `
+    <tr>
+      <td><code>${s.sku}</code></td>
+      <td><input class="catalog-price-input" id="sku-list-${i}" type="number" step="0.01" value="${s.list_price_usd ?? ""}" /></td>
+      <td><input class="catalog-price-input" id="sku-map-${i}" type="number" step="0.01" value="${s.map_price_usd ?? ""}" /></td>
+      <td><input class="catalog-price-input" id="sku-dist-${i}" type="number" step="0.01" value="${s.distributor_price_usd ?? ""}" /></td>
+    </tr>`).join("");
+  openModal(`
+    <h2>Catalog Pricing — ${pricing.channel}</h2>
+    <p style="color:var(--text-muted);margin-bottom:14px;font-size:13px">
+      List prices seed from inventory (LCP061000 / LCSS61000 / LCA061000). MAP and target/distributor prices are editable.
+    </p>
+    <div class="form-group">
+      <label class="form-label">Channel list price (USD)</label>
+      <input class="form-input" id="cat-list-price" type="number" step="0.01" value="${pricing.list_price_usd ?? ""}" />
+    </div>
+    <div class="form-group">
+      <label class="form-label">MAP price (USD)</label>
+      <input class="form-input" id="cat-map-price" type="number" step="0.01" value="${pricing.map_price_usd ?? ""}" />
+    </div>
+    <div class="form-group">
+      <label class="form-label">Target catalog / distributor price (USD)</label>
+      <input class="form-input" id="cat-target-price" type="number" step="0.01" value="${pricing.target_catalog_price_usd ?? ""}" />
+    </div>
+    <div class="form-group">
+      <label class="form-label">Currency</label>
+      <input class="form-input" id="cat-currency" type="text" value="${pricing.currency || "USD"}" />
+    </div>
+    <div class="form-group">
+      <label class="form-label">Campaign notes</label>
+      <textarea class="form-input" id="cat-campaign-notes" rows="3">${pricing.campaign_notes || ""}</textarea>
+    </div>
+    <h3 style="font-size:14px;margin:16px 0 8px">Per-SKU pricing</h3>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead><tr><th>SKU</th><th>List</th><th>MAP</th><th>Distributor</th></tr></thead>
+        <tbody>${skuRows || '<tr><td colspan="4">No SKU breakdown</td></tr>'}</tbody>
+      </table>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveCatalogPricing('${id}', ${(pricing.sku_pricing || []).length})">Save Pricing</button>
+    </div>
+  `);
+}
+
+async function saveCatalogPricing(id, skuCount) {
+  const numOrNull = (v) => {
+    if (v === "" || v == null) return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const sku_pricing = [];
+  for (let i = 0; i < skuCount; i++) {
+    const listEl = $(`#sku-list-${i}`);
+    const mapEl = $(`#sku-map-${i}`);
+    const distEl = $(`#sku-dist-${i}`);
+    const code = listEl?.closest("tr")?.querySelector("code")?.textContent;
+    sku_pricing.push({
+      sku: code,
+      list_price_usd: numOrNull(listEl?.value),
+      map_price_usd: numOrNull(mapEl?.value),
+      distributor_price_usd: numOrNull(distEl?.value),
+    });
+  }
+  const body = {
+    list_price_usd: numOrNull($("#cat-list-price")?.value),
+    map_price_usd: numOrNull($("#cat-map-price")?.value),
+    target_catalog_price_usd: numOrNull($("#cat-target-price")?.value),
+    currency: ($("#cat-currency")?.value || "USD").trim() || "USD",
+    campaign_notes: $("#cat-campaign-notes")?.value || "",
+    sku_pricing,
+  };
+  try {
+    await patch(`/distributor-listings/${id}/pricing`, body);
+    closeModal();
+    showToast("Catalog pricing updated");
+    loadCatalogMonitor();
+  } catch (e) {
+    showToast("Error: " + e.message, "error");
+  }
+}
+
+async function syncCatalogPricesFromInventory() {
+  try {
+    const res = await post("/distributor-listings/sync-prices-from-inventory", {});
+    showToast(`Synced list prices for ${res.synced} channels from inventory`);
+    loadCatalogMonitor();
+  } catch (e) {
+    showToast("Sync failed: " + e.message, "error");
+  }
+}
+
+const _filterCatalogChannel = $("#filter-catalog-channel");
+const _filterCatalogStatus = $("#filter-catalog-status");
+const _btnSyncCatalogPrices = $("#btn-sync-catalog-prices");
+if (_filterCatalogChannel) _filterCatalogChannel.addEventListener("change", loadCatalogMonitor);
+if (_filterCatalogStatus) _filterCatalogStatus.addEventListener("change", loadCatalogMonitor);
+if (_btnSyncCatalogPrices) _btnSyncCatalogPrices.addEventListener("click", syncCatalogPricesFromInventory);
+
+
 /* ── Inventory ───────────────────────────────────────────────── */
 let _inventory = [];
 
@@ -1259,6 +1453,10 @@ Object.assign(window, {
   deleteLead,
   submitGenerateLeads,
   loadInventory,
+  loadCatalogMonitor,
+  openCatalogPricing,
+  saveCatalogPricing,
+  syncCatalogPricesFromInventory,
   approveItem,
   rejectItem,
 });

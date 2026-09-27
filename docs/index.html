@@ -43,6 +43,9 @@
       <a href="#" class="nav-item" data-view="inventory">
         <i data-feather="box"></i> Inventory
       </a>
+      <a href="#" class="nav-item" data-view="catalog">
+        <i data-feather="layers"></i> Catalog Monitor
+      </a>
       <a href="#" class="nav-item" data-view="agent">
         <i data-feather="cpu"></i> AI Agent
       </a>
@@ -238,6 +241,77 @@
               </tr>
             </thead>
             <tbody id="inventory-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+
+    <!-- ── Catalog Monitor view ── -->
+    <section id="view-catalog" class="view">
+      <header class="view-header">
+        <h1>Listings / Catalog Monitor</h1>
+        <span class="subtitle">Distributor channel status + catalog pricing (list from inventory)</span>
+        <div class="header-actions">
+          <button class="btn btn-secondary" id="btn-sync-catalog-prices" title="Sync list prices from inventory">
+            <i data-feather="refresh-cw"></i> Sync from Inventory
+          </button>
+        </div>
+      </header>
+
+      <div class="stats-grid" id="catalog-status-board">
+        <div class="stat-card"><div class="stat-value" id="cat-stat-total">–</div><div class="stat-label">Channels</div></div>
+        <div class="stat-card"><div class="stat-value" id="cat-stat-not-started">–</div><div class="stat-label">Not Started</div></div>
+        <div class="stat-card"><div class="stat-value" id="cat-stat-in-flight">–</div><div class="stat-label">In Flight</div></div>
+        <div class="stat-card"><div class="stat-value" id="cat-stat-listed">–</div><div class="stat-label">Listed</div></div>
+        <div class="stat-card"><div class="stat-value" id="cat-stat-priced">–</div><div class="stat-label">With List Price</div></div>
+      </div>
+
+      <div class="filter-bar">
+        <select id="filter-catalog-channel" class="form-select">
+          <option value="">All Channels</option>
+          <option>Grainger</option>
+          <option>McMaster</option>
+          <option>MSC</option>
+          <option>Zoro</option>
+          <option>Thomasnet</option>
+          <option>Aerospace TBD</option>
+          <option>GlobalSpec</option>
+          <option>Amazon Business</option>
+          <option>Fastenal</option>
+          <option>Motion</option>
+          <option>Applied</option>
+        </select>
+        <select id="filter-catalog-status" class="form-select">
+          <option value="">All Statuses</option>
+          <option value="not_started">Not Started</option>
+          <option value="applied">Applied</option>
+          <option value="in_review">In Review</option>
+          <option value="approved">Approved</option>
+          <option value="listed">Listed</option>
+          <option value="on_hold">On Hold</option>
+          <option value="rejected">Rejected</option>
+        </select>
+      </div>
+
+      <div class="card">
+        <div class="table-wrap">
+          <table class="data-table" id="catalog-table">
+            <thead>
+              <tr>
+                <th>Priority</th>
+                <th>Channel</th>
+                <th>Status</th>
+                <th>List USD</th>
+                <th>MAP USD</th>
+                <th>Target / Dist. USD</th>
+                <th>Currency</th>
+                <th>Last Check</th>
+                <th>SKUs</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="catalog-tbody"></tbody>
           </table>
         </div>
       </div>
