@@ -33,6 +33,18 @@ from xometry import (
     xometry_config_summary,
 )
 from xometry.service import ensure_schema as ensure_mfg_schema
+from billing import (
+    INVOICE_STATUSES,
+    create_invoice_for_order,
+    ensure_invoices_schema,
+    get_invoice,
+    get_invoice_for_order,
+    list_invoices,
+    maybe_invoice_on_po_confirmed,
+    render_invoice_html,
+    render_invoice_pdf,
+    update_invoice_status,
+)
 
 load_dotenv()
 
@@ -217,10 +229,35 @@ def init_db():
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS invoices (
+                id TEXT PRIMARY KEY,
+                order_id TEXT NOT NULL,
+                contact_id TEXT NOT NULL,
+                invoice_number TEXT NOT NULL UNIQUE,
+                po_number TEXT,
+                status TEXT NOT NULL DEFAULT 'Draft',
+                approval_status TEXT NOT NULL DEFAULT 'pending',
+                subtotal_usd REAL NOT NULL DEFAULT 0,
+                tax_usd REAL NOT NULL DEFAULT 0,
+                total_usd REAL NOT NULL DEFAULT 0,
+                currency TEXT NOT NULL DEFAULT 'USD',
+                terms TEXT DEFAULT 'Net 30',
+                notes TEXT,
+                line_items TEXT,
+                issued_at TEXT,
+                due_at TEXT,
+                paid_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (order_id) REFERENCES orders(id),
+                FOREIGN KEY (contact_id) REFERENCES contacts(id)
+            );
+
         """)
     _migrate_db()
     with get_db() as conn:
         ensure_mfg_schema(conn)
+        ensure_invoices_schema(conn)
     _seed_contacts()
     _seed_inventory()
     _seed_distributor_listings()
@@ -320,6 +357,7 @@ def _migrate_db():
         "ALTER TABLE contacts ADD COLUMN nda_signed INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE orders ADD COLUMN po_number TEXT",
         "ALTER TABLE emails ADD COLUMN meeting_id TEXT",
+        "ALTER TABLE emails ADD COLUMN invoice_id TEXT",
     ]
     with get_db() as conn:
         for sql in migration_sqls:
@@ -1193,6 +1231,9 @@ class OrderStatusUpdate(BaseModel):
     status: str
     po_number: Optional[str] = None
 
+class InvoiceStatusUpdate(BaseModel):
+    status: str  # Draft | Sent | Paid | Void
+
 class ManufacturingJobStatusUpdate(BaseModel):
     status: str
     tracking_number: Optional[str] = None
@@ -1680,8 +1721,10 @@ def create_order(body: OrderCreate):
     oid = str(uuid.uuid4())
     total = body.quantity_tons * body.unit_price_usd
     mfg = None
+    inv = None
     with get_db() as conn:
         ensure_mfg_schema(conn)
+        ensure_invoices_schema(conn)
         conn.execute(
             """INSERT INTO orders
                (id, contact_id, product, quantity_tons, unit_price_usd, status, notes, created_at, updated_at, po_number)
@@ -1696,9 +1739,12 @@ def create_order(body: OrderCreate):
         )
         if initial_status == "Confirmed":
             mfg = on_po_acquired(conn, oid, po_number=body.po_number)
+            inv = maybe_invoice_on_po_confirmed(conn, oid)
     out = {"id": oid, "total_usd": total, "status": initial_status, "po_number": body.po_number}
     if mfg:
         out["manufacturing"] = mfg
+    if inv:
+        out["invoice"] = inv
     return out
 
 
@@ -1725,8 +1771,10 @@ def update_order_status(order_id: str, body: OrderStatusUpdate):
         raise HTTPException(status_code=400, detail=f"Invalid status. Choose from: {ORDER_STATUSES}")
     now = datetime.utcnow().isoformat()
     mfg = None
+    inv = None
     with get_db() as conn:
         ensure_mfg_schema(conn)
+        ensure_invoices_schema(conn)
         row = conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Order not found")
@@ -1742,9 +1790,13 @@ def update_order_status(order_id: str, body: OrderStatusUpdate):
             )
         if body.status == "Confirmed":
             mfg = on_po_acquired(conn, order_id, po_number=body.po_number)
+            # Auto-invoice when Confirmed with PO (including PO added later to Confirmed)
+            inv = maybe_invoice_on_po_confirmed(conn, order_id)
     out = {"message": "Order status updated", "status": body.status, "po_number": body.po_number}
     if mfg:
         out["manufacturing"] = mfg
+    if inv:
+        out["invoice"] = inv
     return out
 
 
@@ -1759,6 +1811,111 @@ def get_order_manufacturing(order_id: str):
     if not job:
         return {"order_id": order_id, "job": None}
     return {"order_id": order_id, "job": job}
+
+
+@app.post("/orders/{order_id}/invoice", status_code=201)
+def create_order_invoice(order_id: str):
+    """Manually create an invoice for a Confirmed order (e.g. Confirmed without PO, or retry)."""
+    with get_db() as conn:
+        ensure_invoices_schema(conn)
+        row = conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Order not found")
+        order = dict(row)
+        if order.get("status") != "Confirmed":
+            raise HTTPException(status_code=400, detail="Order must be Confirmed to invoice")
+        existing = get_invoice_for_order(conn, order_id)
+        if existing:
+            return {**existing, "message": "Invoice already exists", "created": False}
+        # Manual path: allow without PO (require_po=False) so James can invoice Confirmed orders
+        inv = create_invoice_for_order(conn, order_id, require_po=False)
+        if not inv:
+            raise HTTPException(status_code=400, detail="Could not create invoice")
+    return {**inv, "created": True}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Routes – Invoices (internal billing)
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.get("/invoices")
+def api_list_invoices(order_id: Optional[str] = None):
+    with get_db() as conn:
+        return list_invoices(conn, order_id=order_id)
+
+
+@app.get("/invoices/{invoice_id}")
+def api_get_invoice(invoice_id: str):
+    with get_db() as conn:
+        ensure_invoices_schema(conn)
+        inv = get_invoice(conn, invoice_id)
+        if not inv:
+            raise HTTPException(status_code=404, detail="Invoice not found")
+        contact = conn.execute(
+            "SELECT * FROM contacts WHERE id=?", (inv["contact_id"],)
+        ).fetchone()
+    out = dict(inv)
+    if contact:
+        out["contact_name"] = contact["name"]
+        out["company"] = contact["company"]
+        out["contact_email"] = contact["email"]
+    return out
+
+
+@app.get("/invoices/{invoice_id}/html")
+def api_invoice_html(invoice_id: str):
+    with get_db() as conn:
+        ensure_invoices_schema(conn)
+        inv = get_invoice(conn, invoice_id)
+        if not inv:
+            raise HTTPException(status_code=404, detail="Invoice not found")
+        contact = conn.execute(
+            "SELECT * FROM contacts WHERE id=?", (inv["contact_id"],)
+        ).fetchone()
+    html = render_invoice_html(inv, dict(contact) if contact else {})
+    return Response(content=html, media_type="text/html; charset=utf-8")
+
+
+@app.get("/invoices/{invoice_id}/pdf")
+def api_invoice_pdf(invoice_id: str):
+    with get_db() as conn:
+        ensure_invoices_schema(conn)
+        inv = get_invoice(conn, invoice_id)
+        if not inv:
+            raise HTTPException(status_code=404, detail="Invoice not found")
+        contact = conn.execute(
+            "SELECT * FROM contacts WHERE id=?", (inv["contact_id"],)
+        ).fetchone()
+    try:
+        pdf_bytes = render_invoice_pdf(inv, dict(contact) if contact else {})
+    except ImportError:
+        raise HTTPException(
+            status_code=501,
+            detail="PDF generation requires reportlab. Use GET /invoices/{id}/html and browser Print-to-PDF.",
+        )
+    filename = f"{inv['invoice_number']}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.put("/invoices/{invoice_id}/status")
+def api_update_invoice_status(invoice_id: str, body: InvoiceStatusUpdate):
+    if body.status not in INVOICE_STATUSES:
+        raise HTTPException(status_code=400, detail=f"Invalid status. Choose from: {INVOICE_STATUSES}")
+    with get_db() as conn:
+        ensure_invoices_schema(conn)
+        try:
+            updated = update_invoice_status(conn, invoice_id, body.status)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Invoice not found")
+        except PermissionError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    return updated
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1998,7 +2155,8 @@ def get_funnel():
             "(SELECT COUNT(*) FROM leads WHERE status='New') as new_leads, "
             "(SELECT COUNT(*) FROM emails WHERE approval_status='pending') + "
             "(SELECT COUNT(*) FROM meetings WHERE approval_status='pending') + "
-            "(SELECT COUNT(*) FROM feedback WHERE approval_status='pending') as pending_approvals "
+            "(SELECT COUNT(*) FROM feedback WHERE approval_status='pending') + "
+            "(SELECT COUNT(*) FROM invoices WHERE approval_status='pending') as pending_approvals "
             "FROM contacts"
         ).fetchone()
     stage_counts = {r["stage"]: r["count"] for r in rows}
@@ -2107,18 +2265,20 @@ def run_agent(body: AgentRunRequest):
 # Routes – Approvals
 # ──────────────────────────────────────────────────────────────────────────────
 
-_APPROVAL_TABLES = {"emails": "emails", "meetings": "meetings", "feedback": "feedback"}
+_APPROVAL_TABLES = {"emails": "emails", "meetings": "meetings", "feedback": "feedback", "invoices": "invoices"}
 
 # Pre-built approve/reject queries keyed by comm_type to avoid any f-string SQL construction
 _APPROVE_QUERIES = {
     "emails":   "UPDATE emails   SET approval_status='approved' WHERE id=? AND approval_status='pending'",
     "meetings": "UPDATE meetings SET approval_status='approved' WHERE id=? AND approval_status='pending'",
     "feedback": "UPDATE feedback SET approval_status='approved' WHERE id=? AND approval_status='pending'",
+    "invoices": "UPDATE invoices SET approval_status='approved' WHERE id=? AND approval_status='pending'",
 }
 _REJECT_QUERIES = {
     "emails":   "UPDATE emails   SET approval_status='rejected' WHERE id=? AND approval_status='pending'",
     "meetings": "UPDATE meetings SET approval_status='rejected' WHERE id=? AND approval_status='pending'",
     "feedback": "UPDATE feedback SET approval_status='rejected' WHERE id=? AND approval_status='pending'",
+    "invoices": "UPDATE invoices SET approval_status='rejected' WHERE id=? AND approval_status='pending'",
 }
 
 
@@ -2126,6 +2286,7 @@ _REJECT_QUERIES = {
 def list_approvals():
     """Return all outgoing communications pending manager approval."""
     with get_db() as conn:
+        ensure_invoices_schema(conn)
         pending_emails = conn.execute(
             "SELECT e.*, c.name as contact_name, c.company FROM emails e "
             "JOIN contacts c ON e.contact_id = c.id "
@@ -2141,14 +2302,30 @@ def list_approvals():
             "JOIN contacts c ON f.contact_id = c.id "
             "WHERE f.approval_status = 'pending' ORDER BY f.created_at DESC"
         ).fetchall()
+        pending_invoices = conn.execute(
+            "SELECT i.*, c.name as contact_name, c.company FROM invoices i "
+            "JOIN contacts c ON i.contact_id = c.id "
+            "WHERE i.approval_status = 'pending' ORDER BY i.created_at DESC"
+        ).fetchall()
     emails_list = [dict(r) for r in pending_emails]
     meetings_list = [dict(r) for r in pending_meetings]
     feedback_list = [dict(r) for r in pending_feedback]
+    invoices_list = []
+    for r in pending_invoices:
+        d = dict(r)
+        raw = d.get("line_items")
+        if isinstance(raw, str):
+            try:
+                d["line_items"] = json.loads(raw) if raw else []
+            except Exception:
+                d["line_items"] = []
+        invoices_list.append(d)
     return {
         "emails": emails_list,
         "meetings": meetings_list,
         "feedback": feedback_list,
-        "total": len(emails_list) + len(meetings_list) + len(feedback_list),
+        "invoices": invoices_list,
+        "total": len(emails_list) + len(meetings_list) + len(feedback_list) + len(invoices_list),
     }
 
 

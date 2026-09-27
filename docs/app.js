@@ -116,6 +116,7 @@ async function loadView(view) {
     case "emails": return loadEmails();
     case "meetings": return loadMeetings();
     case "orders": return loadOrders();
+    case "invoices": return loadInvoices();
     case "feedback": return loadFeedback();
     case "leads": return loadLeads();
     case "inventory": return loadInventory();
@@ -567,9 +568,14 @@ async function loadOrders() {
   try {
     const orders = await api("/orders");
     const jobs = await api("/manufacturing/jobs").catch(() => []);
+    const invoices = await api("/invoices").catch(() => []);
     const byOrder = {};
     (jobs || []).forEach((j) => {
       if (!byOrder[j.order_id]) byOrder[j.order_id] = j;
+    });
+    const invByOrder = {};
+    (invoices || []).forEach((inv) => {
+      if (!invByOrder[inv.order_id]) invByOrder[inv.order_id] = inv;
     });
     const el = $("#orders-list");
     if (!orders.length) {
@@ -580,23 +586,41 @@ async function loadOrders() {
       .map((o) => {
         const ql = _qtyLabel(o.product);
         const job = byOrder[o.id];
+        const inv = invByOrder[o.id];
         const confirmPo = o.status === "Pending"
           ? `<div style="display:flex;gap:8px;align-items:center;margin-top:6px">
                <input id="po-${o.id}" class="form-input" style="width:160px" placeholder="PO number (optional)" value="${o.po_number || ""}" />
                <button class="btn btn-secondary btn-sm" onclick="confirmOrderWithPo('${o.id}')">Confirm (PO acquired)</button>
              </div>`
           : (o.po_number ? `<div class="list-card-meta">PO: ${o.po_number}</div>` : "");
+        const invBlock = inv
+          ? `<div class="list-card-body">
+               <strong>Invoice</strong> · <a href="#" onclick="navigate('invoices');return false;">${inv.invoice_number}</a>
+               · ${statusPill(inv.status)} · ${approvalPill(inv.approval_status)}
+               · Total ${fmtUSD(inv.total_usd)}
+               <div class="list-card-actions" style="margin-top:6px">
+                 <a class="btn btn-secondary btn-sm" href="${API_BASE}/invoices/${inv.id}/html" target="_blank" rel="noopener">HTML</a>
+                 <a class="btn btn-secondary btn-sm" href="${API_BASE}/invoices/${inv.id}/pdf" target="_blank" rel="noopener">PDF</a>
+               </div>
+             </div>`
+          : (o.status === "Confirmed"
+            ? `<div class="list-card-body" style="color:var(--text-muted);font-size:0.9em">
+                 No invoice yet.${o.po_number ? "" : " Add a PO and re-confirm, or "}
+                 <button class="btn btn-secondary btn-sm" onclick="manualCreateInvoice('${o.id}')">Create invoice</button>
+               </div>`
+            : "");
         return `
         <div class="list-card">
           <div class="list-card-header">
             <div>
               <div class="list-card-title">${o.product}</div>
-              <div class="list-card-meta">${o.contact_name} (${o.company}) · ${o.quantity_tons} ${ql.qty} · ${fmtUSD(o.unit_price_usd)}${ql.price} · Total: ${fmtUSD(o.quantity_tons * o.unit_price_usd)}</div>
+              <div class="list-card-meta">${o.contact_name} (${o.company}) · ${o.quantity_tons} ${ql.qty} · ${fmtUSD(o.unit_price_usd)}${ql.price} · Total: ${fmtUSD(o.quantity_tons * o.unit_price_usd)}${inv ? ` · Inv: ${inv.invoice_number}` : ""}</div>
             </div>
             ${statusPill(o.status)}
           </div>
           ${o.notes ? `<div class="list-card-body">${o.notes}</div>` : ""}
           ${confirmPo}
+          ${invBlock}
           ${_mfgBlock(o, job)}
           <div class="list-card-actions">
             <select class="form-select" style="width:180px" onchange="updateOrderStatus('${o.id}',this.value)">
@@ -619,7 +643,11 @@ async function confirmOrderWithPo(id) {
     const body = { status: "Confirmed" };
     if (po) body.po_number = po;
     const res = await put(`/orders/${id}/status`, body);
-    showToast(res.manufacturing ? "Confirmed — manufacturing job created" : "Order confirmed");
+    let msg = "Order confirmed";
+    if (res.manufacturing && res.invoice) msg = "Confirmed — manufacturing + invoice draft created";
+    else if (res.manufacturing) msg = "Confirmed — manufacturing job created";
+    else if (res.invoice) msg = "Confirmed — invoice draft created";
+    showToast(msg);
     loadOrders();
   } catch (e) {
     showToast("Error: " + e.message, "error");
@@ -947,6 +975,66 @@ $$(".chip").forEach((chip) => {
   });
 });
 
+/* ── Invoices ─────────────────────────────────────────────────── */
+async function loadInvoices() {
+  const el = $("#invoices-list");
+  if (!el) return;
+  try {
+    const invoices = await api("/invoices");
+    if (!invoices.length) {
+      el.innerHTML = '<p style="color:var(--text-muted)">No invoices yet. Confirm an order with a PO to auto-create a Draft invoice.</p>';
+      return;
+    }
+    el.innerHTML = invoices.map((inv) => `
+      <div class="list-card">
+        <div class="list-card-header">
+          <div>
+            <div class="list-card-title">${inv.invoice_number}</div>
+            <div class="list-card-meta">${inv.contact_name || ""} (${inv.company || ""}) · PO: ${inv.po_number || "—"} · Due ${(inv.due_at || "").slice(0,10) || "—"} · ${fmtUSD(inv.total_usd)}</div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            ${statusPill(inv.status)}
+            ${approvalPill(inv.approval_status)}
+          </div>
+        </div>
+        <div class="list-card-body" style="font-size:0.9em;color:var(--text-muted)">
+          Order ${inv.order_id.slice(0,8)}… · Terms: ${inv.terms || "Net 30"} · Issued ${(inv.issued_at || "").slice(0,10) || "—"}
+        </div>
+        <div class="list-card-actions">
+          <a class="btn btn-secondary btn-sm" href="${API_BASE}/invoices/${inv.id}/html" target="_blank" rel="noopener"><i data-feather="printer"></i> HTML / Print</a>
+          <a class="btn btn-secondary btn-sm" href="${API_BASE}/invoices/${inv.id}/pdf" target="_blank" rel="noopener"><i data-feather="download"></i> PDF</a>
+          <select class="form-select" style="width:140px" onchange="setInvoiceStatus('${inv.id}', this.value)">
+            ${["Draft","Sent","Paid","Void"].map((s) => `<option${s === inv.status ? " selected" : ""}>${s}</option>`).join("")}
+          </select>
+        </div>
+      </div>`).join("");
+    feather.replace();
+  } catch (e) {
+    showToast("Could not load invoices: " + e.message, "error");
+  }
+}
+
+async function setInvoiceStatus(id, status) {
+  try {
+    await put(`/invoices/${id}/status`, { status });
+    showToast("Invoice → " + status);
+    loadInvoices();
+  } catch (e) {
+    showToast("Error: " + e.message, "error");
+    loadInvoices();
+  }
+}
+
+async function manualCreateInvoice(orderId) {
+  try {
+    const res = await post(`/orders/${orderId}/invoice`, {});
+    showToast(res.created === false ? "Invoice already exists: " + res.invoice_number : "Invoice draft created: " + res.invoice_number);
+    loadOrders();
+  } catch (e) {
+    showToast("Error: " + e.message, "error");
+  }
+}
+
 /* ── Approvals ────────────────────────────────────────────────── */
 function approvalPill(status) {
   const normalized = status || "pending";
@@ -1048,6 +1136,27 @@ async function loadApprovals() {
           <div class="list-card-actions">
             <button class="btn btn-sm btn-primary" onclick="approveItem('feedback','${f.id}')"><i data-feather="check"></i> Approve</button>
             <button class="btn btn-sm btn-danger" onclick="rejectItem('feedback','${f.id}')"><i data-feather="x"></i> Reject</button>
+          </div>
+        </div>`).join("");
+      html += "</div></div>";
+    }
+
+    if (data.invoices && data.invoices.length) {
+      html += `<div class="card"><h2 class="card-title"><i data-feather="file-text"></i> Invoices (${data.invoices.length})</h2><div class="card-list">`;
+      html += data.invoices.map((inv) => `
+        <div class="list-card">
+          <div class="list-card-header">
+            <div>
+              <div class="list-card-title">${inv.invoice_number}</div>
+              <div class="list-card-meta">${inv.contact_name} (${inv.company}) · PO: ${inv.po_number || "—"} · ${fmtUSD(inv.total_usd)} · ${fmtDate(inv.created_at)}</div>
+            </div>
+            ${approvalPill(inv.approval_status)}
+          </div>
+          <div class="list-card-body">Draft invoice ready for review. Approve before marking Sent. Linked email draft is also pending under Emails.</div>
+          <div class="list-card-actions">
+            <a class="btn btn-sm btn-secondary" href="${API_BASE}/invoices/${inv.id}/html" target="_blank" rel="noopener">Preview HTML</a>
+            <button class="btn btn-sm btn-primary" onclick="approveItem('invoices','${inv.id}')"><i data-feather="check"></i> Approve</button>
+            <button class="btn btn-sm btn-danger" onclick="rejectItem('invoices','${inv.id}')"><i data-feather="x"></i> Reject</button>
           </div>
         </div>`).join("");
       html += "</div></div>";
