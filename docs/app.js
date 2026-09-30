@@ -80,6 +80,19 @@ function statusPill(status) {
 /* ── Navigation ──────────────────────────────────────────────── */
 let _currentView = "dashboard";
 
+function closeMobileNav() {
+  document.body.classList.remove("nav-open");
+  const toggle = $("#nav-toggle");
+  if (toggle) toggle.setAttribute("aria-expanded", "false");
+}
+
+function openMobileNav() {
+  document.body.classList.add("nav-open");
+  const toggle = $("#nav-toggle");
+  if (toggle) toggle.setAttribute("aria-expanded", "true");
+  feather.replace();
+}
+
 function navigate(view) {
   $$(".view").forEach((v) => v.classList.remove("active"));
   $$(".nav-item").forEach((a) => a.classList.remove("active"));
@@ -88,6 +101,7 @@ function navigate(view) {
   const nav = $(`.nav-item[data-view="${view}"]`);
   if (nav) nav.classList.add("active");
   _currentView = view;
+  closeMobileNav();
   loadView(view);
 }
 
@@ -97,6 +111,26 @@ $$(".nav-item").forEach((a) => {
     navigate(a.dataset.view);
   });
 });
+
+/* ── Mobile nav ──────────────────────────────────────────────── */
+const navToggle = $("#nav-toggle");
+const navClose = $("#nav-close");
+const navBackdrop = $("#nav-backdrop");
+if (navToggle) navToggle.addEventListener("click", openMobileNav);
+if (navClose) navClose.addEventListener("click", closeMobileNav);
+if (navBackdrop) navBackdrop.addEventListener("click", closeMobileNav);
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeMobileNav();
+});
+
+/* ── PWA service worker ──────────────────────────────────────── */
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./sw.js").catch((err) => {
+      console.warn("Service worker registration failed:", err);
+    });
+  });
+}
 
 /* ── API health check ────────────────────────────────────────── */
 async function checkHealth() {

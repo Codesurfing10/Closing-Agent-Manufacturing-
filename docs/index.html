@@ -2,18 +2,33 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0d1117" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Closing Agent" />
   <title>Closing Agent — LC-Flow Manufacturing</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
   <link rel="stylesheet" href="style.css" />
   <!-- Feather icons (lightweight SVG icons) -->
   <script src="https://unpkg.com/feather-icons@4.29.0/dist/feather.min.js"></script>
 </head>
 <body>
+  <button type="button" id="nav-toggle" class="nav-toggle" aria-label="Open menu" aria-expanded="false" aria-controls="app-sidebar">
+    <i data-feather="menu"></i>
+  </button>
+  <div id="nav-backdrop" class="nav-backdrop" aria-hidden="true"></div>
+
   <!-- ── Sidebar ───────────────────────────────────────────────── -->
-  <aside class="sidebar">
+  <aside class="sidebar" id="app-sidebar">
     <div class="sidebar-brand">
       <span class="brand-icon">⚗️</span>
       <span class="brand-text">LC-Flow Agent</span>
+      <button type="button" id="nav-close" class="nav-close" aria-label="Close menu">
+        <i data-feather="x"></i>
+      </button>
     </div>
     <nav class="sidebar-nav">
       <a href="#" class="nav-item active" data-view="dashboard">
