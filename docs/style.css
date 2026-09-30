@@ -180,6 +180,7 @@ body {
   align-items: center;
   gap: 6px;
   padding: 7px 16px;
+  min-height: 40px;
   border-radius: var(--radius);
   border: none;
   cursor: pointer;
@@ -430,11 +431,111 @@ body {
 /* ── Stat card warning variant ───────────────────────────────── */
 .stat-card-warn .stat-value { color: var(--warn); }
 
+/* ── Mobile nav toggle (hidden on desktop) ───────────────────── */
+.nav-toggle,
+.nav-close {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.nav-toggle svg,
+.nav-close svg { width: 20px; height: 20px; }
+.nav-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 150;
+}
+
+/* Larger touch targets on nav */
+.nav-item {
+  min-height: 44px;
+}
+
 /* ── Responsive ──────────────────────────────────────────────── */
 @media (max-width: 700px) {
   :root { --sidebar-w: 0px; }
-  .sidebar { display: none; }
-  .main { padding: 16px; }
+
+  .nav-toggle {
+    display: inline-flex;
+    position: fixed;
+    top: max(12px, env(safe-area-inset-top));
+    left: max(12px, env(safe-area-inset-left));
+    z-index: 140;
+  }
+
+  .nav-close {
+    display: inline-flex;
+    margin-left: auto;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+  }
+
+  .sidebar {
+    display: flex;
+    width: min(280px, 86vw);
+    transform: translateX(-105%);
+    transition: transform 0.2s ease;
+    z-index: 160;
+    box-shadow: var(--shadow);
+  }
+  body.nav-open .sidebar {
+    transform: translateX(0);
+  }
+  body.nav-open .nav-backdrop {
+    display: block;
+  }
+  body.nav-open .nav-toggle {
+    visibility: hidden;
+  }
+
+  .main {
+    padding: 16px;
+    padding-top: 64px; /* room for fixed menu button */
+  }
+
+  .view-header {
+    flex-wrap: wrap;
+  }
+  .view-header h1 {
+    font-size: 20px;
+  }
+
+  .filter-bar {
+    flex-wrap: wrap;
+  }
+  .form-select,
+  .form-input {
+    min-height: 44px;
+    font-size: 16px; /* avoid iOS zoom on focus */
+  }
+
+  .stats-grid {
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 10px;
+  }
+  .stat-card { padding: 14px; }
+  .stat-value { font-size: 22px; }
+
+  .table-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .agent-input-row {
+    flex-wrap: wrap;
+  }
 }
 
 /* ── Catalog Monitor ─────────────────────────────────────────── */
